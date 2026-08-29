@@ -69,12 +69,12 @@ export const api = {
     request<{ messages: Message[] }>("/api/agents/" + id + "/messages"),
   runs: (id: string) =>
     request<{ runs: AgentRun[] }>("/api/agents/" + id + "/runs"),
-  sendMessage: (id: string, content: string) =>
+  sendMessage: (id: string, content: string, retryOfRunId?: string | null) =>
     request<{ run: AgentRun; message: Message }>(
       "/api/agents/" + id + "/messages",
       {
         method: "POST",
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, retryOfRunId: retryOfRunId ?? null }),
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),

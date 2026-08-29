@@ -165,6 +165,7 @@ export class ContainerCodexRunner implements AgentRunner {
     this.active.set(request.agentId, active);
 
     const parsed: ParsedEvents = {
+      runId: request.runId,
       messages: [],
       threadId: request.threadId,
       usage: null,

@@ -15,7 +15,7 @@ afterEach(async () => {
 });
 
 describe("JsonStore", () => {
-  it("migrates a version 1 database to version 2 with trace storage", async () => {
+  it("migrates a version 1 database to version 3 with trace identity", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
     temporaryDirectories.push(root);
     const filePath = path.join(root, "db.json");
@@ -31,8 +31,9 @@ describe("JsonStore", () => {
     );
     const store = new JsonStore(filePath);
     await store.initialize();
-    expect(store.snapshot().version).toBe(2);
+    expect(store.snapshot().version).toBe(3);
     expect(store.snapshot().traceEvents).toEqual([]);
+    expect(store.snapshot().agents[0]?.sessionId).toBe("legacy-session-agent-1");
   });
 
   it("does not publish a mutation in memory when persistence fails", async () => {

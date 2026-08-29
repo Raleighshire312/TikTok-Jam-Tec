@@ -5,11 +5,11 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "node --env-file=../../.env --watch --import tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
-    "start": "node dist/index.js"
+    "test": "vitest run --pool=threads",
+    "start": "node --env-file=../../.env dist/index.js"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",

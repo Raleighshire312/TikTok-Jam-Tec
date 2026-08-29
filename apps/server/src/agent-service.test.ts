@@ -90,10 +90,14 @@ describe("Agent lifecycle", () => {
     const agent = await service.createAgent({ name: "Coder" });
     const { run } = await service.sendMessage(agent.id, "write hello world");
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    const storedRun = service.getRun(run.id);
     const messages = service.getMessages(agent.id);
     expect(messages.map((message) => message.role)).toEqual(["user", "assistant"]);
     expect(messages[1]?.content).toContain("write hello world");
     expect(service.getAgent(agent.id).codexThreadId).toBe("fake-thread");
+    expect(storedRun.traceId).toBeTruthy();
+    expect(storedRun.sessionId).toBe(agent.sessionId);
+    expect(storedRun.attempt).toBe(1);
   });
 
   it("atomically accepts only one concurrent run per Agent", async () => {
@@ -175,5 +179,31 @@ describe("Agent lifecycle", () => {
       [...trace.traceEvents.map((event) => event.sequence)].sort((a, b) => a - b),
     );
     expect(trace.summary.stepCount).toBeGreaterThan(0);
+    expect(trace.summary.diagnosis.severity).toBe("success");
+    expect(
+      trace.summary.diagnosis.evidenceEventId === null ||
+        trace.traceEvents.some(
+          (event) =>
+            event.id === trace.summary.diagnosis.evidenceEventId ||
+            event.spanId === trace.summary.diagnosis.evidenceEventId,
+        ),
+    ).toBe(true);
+    expect(trace.summary.firstFailure).toBeNull();
+  });
+
+  it("links retries to a terminal run and increments the attempt number", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Retry" });
+    const first = await service.sendMessage(agent.id, "inspect the repo");
+    await expect.poll(() => service.getRun(first.run.id).status).toBe("completed");
+
+    const retried = await service.sendMessage(agent.id, "inspect the repo again", first.run.id);
+    await expect.poll(() => service.getRun(retried.run.id).status).toBe("completed");
+
+    expect(service.getRun(retried.run.id)).toMatchObject({
+      retryOfRunId: first.run.id,
+      attempt: 2,
+      sessionId: agent.sessionId,
+    });
   });
 });

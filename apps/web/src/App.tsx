@@ -1,23 +1,38 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
+  AlertTriangle,
   Bot,
+  CheckCircle2,
   Clock3,
+  Download,
   Eye,
   FilePenLine,
+  Info,
+  RotateCcw,
+  RefreshCcw,
   Search,
   ShieldAlert,
   TerminalSquare,
   Wrench,
 } from "lucide-react";
 import { api, ApiError, setAuthToken } from "./api";
+import {
+  defaultTraceFilters,
+  downloadTraceExport,
+  filterTraceEvents,
+  isFailureEvent,
+} from "./trace-utils";
 import type {
   Agent,
   AgentRun,
   Message,
   RunTrace,
   SystemInfo,
+  TraceDiagnosis,
   TraceEvent,
+  TraceKind,
+  TraceStatus,
 } from "./types";
 
 const starterPrompts = [
@@ -81,11 +96,18 @@ function runTone(run: AgentRun, trace: RunTrace | null): string {
 }
 
 function traceTone(event: TraceEvent): string {
-  if (event.status === "failed") return "failed";
+  if (isFailureEvent(event) || event.status === "failed") return "failed";
   if (event.status === "cancelled") return "cancelled";
   if (event.status === "completed") return "completed";
   if (event.status === "running") return "running";
   return "queued";
+}
+
+function diagnosisTone(severity: TraceDiagnosis["severity"]): string {
+  if (severity === "error") return "failed";
+  if (severity === "warning") return "warning";
+  if (severity === "success") return "completed";
+  return "running";
 }
 
 function eventSummary(event: TraceEvent): string {
@@ -97,6 +119,132 @@ function eventSummary(event: TraceEvent): string {
   if (event.detail?.text) return event.detail.text;
   if (event.detail?.note) return event.detail.note;
   return event.source === "service" ? "Platform lifecycle event" : "Runtime event";
+}
+
+function evidenceIdFor(event: TraceEvent): string {
+  return event.spanId || event.id;
+}
+
+function formatLabel(value: string): string {
+  return value
+    .split("_")
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function formatNumber(value: number | null | undefined): string {
+  if (typeof value !== "number") return "0";
+  return value.toLocaleString();
+}
+
+function formatOptional(value: string | null | undefined): string {
+  return value && value.trim().length > 0 ? value : "Unavailable";
+}
+
+function DiagnosisIcon({ severity }: { severity: TraceDiagnosis["severity"] }) {
+  const size = 16;
+  if (severity === "success") return <CheckCircle2 size={size} />;
+  if (severity === "warning") return <AlertTriangle size={size} />;
+  if (severity === "error") return <ShieldAlert size={size} />;
+  return <Info size={size} />;
+}
+
+function TraceEventDetails({
+  event,
+  highlighted,
+}: {
+  event: TraceEvent;
+  highlighted: boolean;
+}) {
+  const rows: Array<{ label: string; value: string; code?: boolean }> = [];
+
+  rows.push({ label: "Source", value: formatLabel(event.source) });
+  rows.push({ label: "Kind", value: formatLabel(event.kind) });
+  rows.push({ label: "Status", value: formatLabel(event.status) });
+  rows.push({ label: "Span ID", value: event.spanId, code: true });
+  rows.push({ label: "Trace ID", value: event.traceId, code: true });
+  rows.push({ label: "Session ID", value: event.sessionId, code: true });
+  rows.push({ label: "Actor", value: formatLabel(event.actorType) });
+  if (event.parentSpanId) rows.push({ label: "Parent span", value: event.parentSpanId, code: true });
+
+  if (event.detail?.command) rows.push({ label: "Command", value: event.detail.command, code: true });
+  if (typeof event.detail?.exitCode === "number") rows.push({ label: "Exit code", value: String(event.detail.exitCode) });
+  if (event.detail?.filePath) rows.push({ label: "File", value: event.detail.filePath, code: true });
+  if (event.detail?.changeType) rows.push({ label: "Change", value: event.detail.changeType });
+  if (event.detail?.toolName) rows.push({ label: "Tool", value: event.detail.toolName });
+  if (event.detail?.query) rows.push({ label: "Search", value: event.detail.query });
+  if (event.detail?.error) rows.push({ label: "Error", value: event.detail.error });
+  if (event.detail?.text) rows.push({ label: "Text", value: event.detail.text });
+  if (event.detail?.note) rows.push({ label: "Note", value: event.detail.note });
+
+  rows.push({ label: "Started", value: formatDateTime(event.startedAt ?? event.createdAt) });
+  if (event.completedAt) rows.push({ label: "Completed", value: formatDateTime(event.completedAt) });
+  rows.push({ label: "Duration", value: formatDuration(event.durationMs) });
+
+  if (typeof event.usage?.inputTokens === "number") {
+    rows.push({ label: "Input tokens", value: formatNumber(event.usage.inputTokens) });
+  }
+  if (typeof event.usage?.cachedInputTokens === "number") {
+    rows.push({
+      label: "Cached input",
+      value: formatNumber(event.usage.cachedInputTokens),
+    });
+  }
+  if (typeof event.usage?.outputTokens === "number") {
+    rows.push({ label: "Output tokens", value: formatNumber(event.usage.outputTokens) });
+  }
+  if (typeof event.usage?.totalTokens === "number") {
+    rows.push({ label: "Total tokens", value: formatNumber(event.usage.totalTokens) });
+  }
+
+  const metadataRows: Array<[string, string | null | undefined, boolean?]> = [
+    ["Provider session", event.metadata?.providerSessionId, true],
+    ["Ark endpoint", event.metadata?.arkBaseUrl],
+    ["Ark model", event.metadata?.arkModelId],
+    ["Runtime provider", event.metadata?.runtimeProvider],
+    ["Sandbox", event.metadata?.sandboxMode],
+    ["Runtime instance", event.metadata?.runtimeInstanceId],
+    ["Container engine", event.metadata?.containerEngine],
+    ["Container image", event.metadata?.containerImage],
+    ["Tool metadata", event.metadata?.toolName],
+    ["Platform", event.metadata?.platform],
+    ["Architecture", event.metadata?.architecture],
+  ];
+
+  for (const [label, value, code] of metadataRows) {
+    if (value) rows.push({ label, value, code });
+  }
+
+  return (
+    <details className="trace-event-detail" open={highlighted}>
+      <summary>{eventSummary(event)}</summary>
+      <div className="trace-detail-grid">
+        {rows.map((row) => (
+          <div className="trace-detail-row" key={row.label}>
+            <span>{row.label}</span>
+            {row.code ? <code>{row.value}</code> : <strong>{row.value}</strong>}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function InspectorFieldGrid({
+  rows,
+}: {
+  rows: Array<{ label: string; value: string; code?: boolean }>;
+}) {
+  return (
+    <div className="trace-detail-grid trace-summary-grid">
+      {rows.map((row) => (
+        <div className="trace-detail-row" key={row.label}>
+          <span>{row.label}</span>
+          {row.code ? <code>{row.value}</code> : <strong>{row.value}</strong>}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function StatusPill({ status }: { status: Agent["status"] }) {
@@ -134,6 +282,7 @@ function TraceInspector({
   onSelectRun,
   trace,
   loading,
+  onRetryRun,
   onClose,
 }: {
   runs: AgentRun[];
@@ -141,10 +290,66 @@ function TraceInspector({
   onSelectRun: (id: string) => void;
   trace: RunTrace | null;
   loading: boolean;
+  onRetryRun: (run: AgentRun) => void;
   onClose?: () => void;
 }) {
   const selectedRun = runs.find((run) => run.id === selectedRunId) ?? null;
   const traceForRun = trace && trace.run.id === selectedRunId ? trace : null;
+  const [filters, setFilters] = useState(defaultTraceFilters);
+
+  useEffect(() => {
+    setFilters(defaultTraceFilters);
+  }, [selectedRunId]);
+
+  const allEvents = traceForRun?.traceEvents ?? [];
+  const filteredEvents = traceForRun ? filterTraceEvents(allEvents, filters) : [];
+  const diagnosis = traceForRun?.summary.diagnosis ?? null;
+  const evidenceEventId = diagnosis?.evidenceEventId ?? null;
+  const firstFailure = traceForRun?.summary.firstFailure ?? null;
+  const hasActiveFilters =
+    filters.search.trim().length > 0 ||
+    filters.kind !== "all" ||
+    filters.status !== "all" ||
+    filters.failedOnly;
+  const availableKinds = [...new Set(allEvents.map((event) => event.kind))] as TraceKind[];
+  const availableStatuses = [...new Set(allEvents.map((event) => event.status))] as TraceStatus[];
+
+  const focusEvidence = useCallback((eventId: string) => {
+    window.requestAnimationFrame(() => {
+      const element = document.getElementById("trace-event-" + eventId);
+      element?.scrollIntoView({ behavior: "smooth", block: "center" });
+      (element as HTMLElement | null)?.focus();
+    });
+  }, []);
+
+  const resetFilters = useCallback(() => {
+    setFilters(defaultTraceFilters);
+  }, []);
+
+  const viewEvidence = useCallback(() => {
+    if (!evidenceEventId) return;
+    if (!filteredEvents.some((event) => evidenceIdFor(event) === evidenceEventId)) {
+      setFilters(defaultTraceFilters);
+    }
+    window.setTimeout(() => focusEvidence(evidenceEventId), 50);
+  }, [evidenceEventId, filteredEvents, focusEvidence]);
+
+  const exportTrace = useCallback(() => {
+    if (!traceForRun) return;
+    downloadTraceExport(traceForRun);
+  }, [traceForRun]);
+
+  const setQuickFilter = useCallback((preset: "failed" | "running" | "tool_call" | "file_change") => {
+    if (preset === "failed") {
+      setFilters({ ...defaultTraceFilters, failedOnly: true });
+      return;
+    }
+    if (preset === "running") {
+      setFilters({ ...defaultTraceFilters, status: "running" });
+      return;
+    }
+    setFilters({ ...defaultTraceFilters, kind: preset });
+  }, []);
 
   return (
     <aside className="trace-panel">
@@ -226,24 +431,214 @@ function TraceInspector({
             </div>
             <div className="trace-metric">
               <span>Output tokens</span>
-              <strong>{traceForRun?.summary.outputTokens ?? selectedRun.usage?.outputTokens ?? 0}</strong>
+              <strong>{formatNumber(traceForRun?.summary.outputTokens ?? selectedRun.usage?.outputTokens)}</strong>
             </div>
             <div className="trace-metric">
               <span>Redactions</span>
-              <strong>{traceForRun?.summary.redactionCount ?? 0}</strong>
+              <strong>{formatNumber(traceForRun?.summary.redactionCount)}</strong>
             </div>
           </div>
 
+          {diagnosis ? (
+            <div className={"trace-diagnosis trace-diagnosis-" + diagnosisTone(diagnosis.severity)}>
+              <div className="trace-diagnosis-head">
+                <div className="trace-diagnosis-title">
+                  <DiagnosisIcon severity={diagnosis.severity} />
+                  <div>
+                    <span>Diagnosis</span>
+                    <strong>{diagnosis.headline}</strong>
+                  </div>
+                </div>
+                <div className="trace-diagnosis-actions">
+                  <button className="trace-inline-button" onClick={viewEvidence} disabled={!evidenceEventId}>
+                    View evidence
+                  </button>
+                  <button className="trace-inline-button" onClick={exportTrace}>
+                    <Download size={14} />
+                    Download Trace JSON
+                  </button>
+                  <button
+                    className="trace-inline-button"
+                    onClick={() => selectedRun && onRetryRun(selectedRun)}
+                    disabled={!selectedRun}
+                  >
+                    <RefreshCcw size={14} />
+                    Retry
+                  </button>
+                </div>
+              </div>
+              <p>{diagnosis.cause}</p>
+              <div className="trace-diagnosis-footer">
+                <span>{diagnosis.suggestedAction}</span>
+                <span>
+                  {(traceForRun?.summary.redactionCount ?? 0) > 0
+                    ? "Export contains only persisted redacted data."
+                    : "Export uses the persisted trace artifact."}
+                </span>
+              </div>
+            </div>
+          ) : null}
+
+          {traceForRun ? (
+            <div className="trace-summary-stack">
+              <div className="trace-section-title">
+                <span>Identity</span>
+                <span>v3</span>
+              </div>
+              <InspectorFieldGrid
+                rows={[
+                  { label: "Run ID", value: traceForRun.run.id, code: true },
+                  { label: "Trace ID", value: traceForRun.run.traceId, code: true },
+                  { label: "Session ID", value: traceForRun.run.sessionId, code: true },
+                  { label: "Attempt", value: String(traceForRun.run.attempt) },
+                  { label: "Retry of", value: formatOptional(traceForRun.run.retryOfRunId), code: Boolean(traceForRun.run.retryOfRunId) },
+                  { label: "Agent version", value: traceForRun.run.agentVersion },
+                ]}
+              />
+              <div className="trace-section-title">
+                <span>Runtime</span>
+                <span>{traceForRun.traceEvents.length}</span>
+              </div>
+              <InspectorFieldGrid
+                rows={[
+                  { label: "Ark endpoint", value: formatOptional(traceForRun.traceEvents.find((event) => event.metadata?.arkBaseUrl)?.metadata?.arkBaseUrl) },
+                  { label: "Ark model", value: formatOptional(traceForRun.traceEvents.find((event) => event.metadata?.arkModelId)?.metadata?.arkModelId) },
+                  { label: "Provider session", value: formatOptional(traceForRun.traceEvents.find((event) => event.metadata?.providerSessionId)?.metadata?.providerSessionId), code: Boolean(traceForRun.traceEvents.find((event) => event.metadata?.providerSessionId)?.metadata?.providerSessionId) },
+                  { label: "Runtime provider", value: formatOptional(traceForRun.traceEvents.find((event) => event.metadata?.runtimeProvider)?.metadata?.runtimeProvider) },
+                  { label: "Sandbox", value: formatOptional(traceForRun.traceEvents.find((event) => event.metadata?.sandboxMode)?.metadata?.sandboxMode) },
+                ]}
+              />
+              {firstFailure ? (
+                <>
+                  <div className="trace-section-title">
+                    <span>First failure</span>
+                    <span>{formatLabel(firstFailure.kind)}</span>
+                  </div>
+                  <InspectorFieldGrid
+                    rows={[
+                      { label: "Span ID", value: firstFailure.spanId, code: true },
+                      { label: "Label", value: firstFailure.label },
+                      { label: "Command", value: formatOptional(firstFailure.command), code: Boolean(firstFailure.command) },
+                      { label: "Tool", value: formatOptional(firstFailure.toolName) },
+                      { label: "Exit code", value: firstFailure.exitCode === null ? "Unavailable" : String(firstFailure.exitCode) },
+                      { label: "Duration", value: formatDuration(firstFailure.durationMs) },
+                      { label: "Error", value: formatOptional(firstFailure.error) },
+                    ]}
+                  />
+                </>
+              ) : null}
+            </div>
+          ) : null}
+
           <div className="trace-section-title">
             <span>Timeline</span>
-            <span>{traceForRun?.traceEvents.length ?? 0}</span>
+            <span>{traceForRun ? filteredEvents.length + " of " + allEvents.length : 0}</span>
+          </div>
+          <div className="trace-filters">
+            <div className="trace-chip-row">
+              <button className="trace-chip" onClick={() => setQuickFilter("failed")} type="button">
+                Failed
+              </button>
+              <button className="trace-chip" onClick={() => setQuickFilter("running")} type="button">
+                Running
+              </button>
+              <button className="trace-chip" onClick={() => setQuickFilter("tool_call")} type="button">
+                Tool
+              </button>
+              <button className="trace-chip" onClick={() => setQuickFilter("file_change")} type="button">
+                File change
+              </button>
+            </div>
+            <label className="trace-filter trace-filter-search">
+              <span>Search</span>
+              <input
+                type="search"
+                placeholder="Command, file, tool, error..."
+                value={filters.search}
+                onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))}
+              />
+            </label>
+            <label className="trace-filter">
+              <span>Kind</span>
+              <select
+                value={filters.kind}
+                onChange={(event) =>
+                  setFilters((current) => ({
+                    ...current,
+                    kind: event.target.value as TraceKind | "all",
+                  }))
+                }
+              >
+                <option value="all">All kinds</option>
+                {availableKinds.map((kind) => (
+                  <option key={kind} value={kind}>
+                    {formatLabel(kind)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="trace-filter">
+              <span>Status</span>
+              <select
+                value={filters.status}
+                onChange={(event) =>
+                  setFilters((current) => ({
+                    ...current,
+                    status: event.target.value as TraceStatus | "all",
+                  }))
+                }
+              >
+                <option value="all">All statuses</option>
+                {availableStatuses.map((status) => (
+                  <option key={status} value={status}>
+                    {formatLabel(status)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="trace-filter trace-filter-toggle">
+              <input
+                type="checkbox"
+                checked={filters.failedOnly}
+                onChange={(event) =>
+                  setFilters((current) => ({ ...current, failedOnly: event.target.checked }))
+                }
+              />
+              <span>Failed only</span>
+            </label>
+            <div className="trace-filter-summary">
+              <span>{filteredEvents.length} visible events</span>
+              <button className="trace-inline-button" onClick={resetFilters} disabled={!hasActiveFilters}>
+                <RotateCcw size={14} />
+                Reset
+              </button>
+            </div>
           </div>
           <div className="trace-timeline">
             {!traceForRun && loading ? (
-              <div className="trace-empty">Loading run trace…</div>
-            ) : traceForRun && traceForRun.traceEvents.length > 0 ? (
-              traceForRun.traceEvents.map((event) => (
-                <article className={"trace-event trace-event-" + traceTone(event)} key={event.id}>
+              <div className="trace-empty">Loading redacted trace evidence for this run.</div>
+            ) : traceForRun && allEvents.length > 0 && filteredEvents.length === 0 ? (
+              <div className="trace-empty trace-empty-action">
+                <div>
+                  <strong>No events match these filters.</strong>
+                  <span>Try another search, widen the kind or status, or reset back to the full timeline.</span>
+                </div>
+                <button className="trace-inline-button" onClick={resetFilters}>
+                  Reset filters
+                </button>
+              </div>
+            ) : traceForRun && allEvents.length > 0 ? (
+              filteredEvents.map((event) => (
+                <article
+                  className={
+                    "trace-event trace-event-" +
+                    traceTone(event) +
+                    (evidenceIdFor(event) === evidenceEventId ? " trace-event-evidence" : "")
+                  }
+                  key={event.id}
+                  id={"trace-event-" + evidenceIdFor(event)}
+                  tabIndex={-1}
+                >
                   <div className="trace-event-icon">
                     <TraceIcon event={event} />
                   </div>
@@ -257,16 +652,28 @@ function TraceInspector({
                       <span>{formatDateTime(event.startedAt ?? event.createdAt)}</span>
                       {event.redacted ? <span>Redacted</span> : null}
                       {typeof event.detail?.exitCode === "number" ? <span>Exit {event.detail.exitCode}</span> : null}
+                      {evidenceIdFor(event) === evidenceEventId ? <span>Evidence</span> : null}
                     </div>
-                    <details className="trace-event-detail">
-                      <summary>{eventSummary(event)}</summary>
-                      <div>{eventSummary(event)}</div>
-                    </details>
+                    <TraceEventDetails event={event} highlighted={evidenceIdFor(event) === evidenceEventId} />
                   </div>
                 </article>
               ))
+            ) : selectedRun.status === "running" ? (
+              <div className="trace-empty">
+                The run is still active. Timeline evidence appears here as commands, tools, searches, and files are recorded.
+              </div>
+            ) : selectedRun.status === "queued" ? (
+              <div className="trace-empty">
+                This run is queued. Keep the inspector open and AgentTrace will fill in the timeline once execution begins.
+              </div>
+            ) : selectedRun.status === "cancelled" ? (
+              <div className="trace-empty">
+                This run was cancelled before runtime evidence was fully captured.
+              </div>
             ) : (
-              <div className="trace-empty">No runtime trace is available for this run yet.</div>
+              <div className="trace-empty">
+                No runtime trace is available for this run yet. The run metadata is persisted, but no step-level evidence was recorded.
+              </div>
             )}
           </div>
         </>
@@ -285,6 +692,7 @@ export default function App() {
   const [showTraceDrawer, setShowTraceDrawer] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
+  const [retryOfRunId, setRetryOfRunId] = useState<string | null>(null);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [trace, setTrace] = useState<RunTrace | null>(null);
@@ -417,6 +825,7 @@ export default function App() {
     setShowSettings(false);
     setShowTraceDrawer(false);
     setTrace(null);
+    setRetryOfRunId(null);
     if (!selectedId) {
       setMessages([]);
       setRuns([]);
@@ -534,10 +943,12 @@ export default function App() {
     event.preventDefault();
     if (!selected || !prompt.trim()) return;
     const content = prompt.trim();
+    const retrySourceRunId = retryOfRunId;
     setPrompt("");
+    setRetryOfRunId(null);
     setError(null);
     try {
-      const result = await api.sendMessage(selected.id, content);
+      const result = await api.sendMessage(selected.id, content, retrySourceRunId);
       if (selectedIdRef.current === selected.id) {
         setMessages((current) => [...current, result.message]);
         mergeRun(result.run);
@@ -554,6 +965,17 @@ export default function App() {
       await refreshAgents();
     }
   };
+
+  const beginRetry = useCallback((run: AgentRun) => {
+    setPrompt(run.prompt);
+    setRetryOfRunId(run.id);
+    setSelectedRunId(run.id);
+    window.requestAnimationFrame(() => {
+      const element = document.querySelector(".composer textarea") as HTMLTextAreaElement | null;
+      element?.focus();
+      element?.setSelectionRange(element.value.length, element.value.length);
+    });
+  }, []);
 
   const unlock = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -849,6 +1271,15 @@ export default function App() {
                 </div>
 
                 <form className="composer" onSubmit={sendMessage}>
+                  {retryOfRunId ? (
+                    <div className="retry-banner">
+                      <strong>Retry prepared</strong>
+                      <span>This next run will be linked to the selected failed attempt.</span>
+                      <button type="button" className="trace-inline-button" onClick={() => setRetryOfRunId(null)}>
+                        Clear
+                      </button>
+                    </div>
+                  ) : null}
                   <textarea
                     value={prompt}
                     onChange={(event) => setPrompt(event.target.value)}
@@ -896,6 +1327,7 @@ export default function App() {
                 onSelectRun={setSelectedRunId}
                 trace={trace}
                 loading={traceLoading}
+                onRetryRun={beginRetry}
               />
             </div>
           </>
@@ -927,6 +1359,7 @@ export default function App() {
               onSelectRun={setSelectedRunId}
               trace={trace}
               loading={traceLoading}
+              onRetryRun={beginRetry}
               onClose={() => setShowTraceDrawer(false)}
             />
           </div>

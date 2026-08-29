@@ -1,5 +1,6 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type ActorType = "human" | "agent";
 
 export interface Agent {
   id: string;
@@ -8,6 +9,7 @@ export interface Agent {
   instructions: string;
   status: AgentStatus;
   workspacePath: string;
+  sessionId: string;
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;
@@ -26,6 +28,11 @@ export interface Message {
 export interface AgentRun {
   id: string;
   agentId: string;
+  traceId: string;
+  sessionId: string;
+  agentVersion: string;
+  retryOfRunId: string | null;
+  attempt: number;
   status: RunStatus;
   prompt: string;
   output: string | null;
@@ -49,6 +56,7 @@ export type TraceKind =
   | "tool_call"
   | "web_search"
   | "reasoning"
+  | "model_call"
   | "error"
   | "usage"
   | "unknown";
@@ -60,10 +68,31 @@ export type TraceStatus =
   | "cancelled"
   | "info";
 
+export interface TraceSpanMetadata {
+  providerSessionId?: string | null;
+  arkBaseUrl?: string | null;
+  arkModelId?: string | null;
+  runtimeProvider?: "local-process" | "container" | null;
+  sandboxMode?: string | null;
+  runtimeInstanceId?: string | null;
+  containerEngine?: string | null;
+  containerImage?: string | null;
+  toolName?: string | null;
+  platform?: string | null;
+  architecture?: string | null;
+}
+
 export interface TraceEvent {
   id: string;
   runId: string;
   agentId: string;
+  traceId: string;
+  spanId: string;
+  parentSpanId: string | null;
+  sessionId: string;
+  agentVersion: string;
+  actorType: ActorType;
+  metadata: TraceSpanMetadata | null;
   sequence: number;
   source: TraceSource;
   kind: TraceKind;
@@ -94,18 +123,43 @@ export interface TraceEvent {
   createdAt: string;
 }
 
+export type TraceDiagnosisSeverity = "success" | "info" | "warning" | "error";
+
+export interface TraceDiagnosis {
+  severity: TraceDiagnosisSeverity;
+  headline: string;
+  cause: string;
+  evidenceEventId: string | null;
+  suggestedAction: string;
+}
+
+export interface FirstFailureSummary {
+  spanId: string;
+  kind: TraceKind;
+  label: string;
+  command: string | null;
+  toolName: string | null;
+  exitCode: number | null;
+  durationMs: number | null;
+  error: string | null;
+}
+
+export interface RunTraceSummary {
+  durationMs: number | null;
+  stepCount: number | null;
+  failedSteps: number | null;
+  redactionCount: number | null;
+  inputTokens: number | null;
+  cachedInputTokens: number | null;
+  outputTokens: number | null;
+  diagnosis: TraceDiagnosis;
+  firstFailure: FirstFailureSummary | null;
+}
+
 export interface RunTrace {
   run: AgentRun;
   traceEvents: TraceEvent[];
-  summary: {
-    durationMs: number | null;
-    stepCount: number | null;
-    failedSteps: number | null;
-    redactionCount: number | null;
-    inputTokens: number | null;
-    cachedInputTokens: number | null;
-    outputTokens: number | null;
-  };
+  summary: RunTraceSummary;
 }
 
 export interface SystemInfo {

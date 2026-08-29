@@ -11,10 +11,11 @@ This project intentionally does not implement Kill Switch policy enforcement in 
 ## What AgentTrace Adds
 
 - Correlated run timeline stored in the backend
+- Deterministic per-run diagnosis with evidence linking and suggested next action
 - Run lifecycle events from queue to terminal state
 - Runtime steps for commands, file changes, tool calls, searches, messages, usage, and errors
 - Secret redaction for stored prompts, messages, outputs, errors, and trace details
-- Responsive right-side inspector with run history, timeline, durations, failed steps, usage, and redaction counts
+- Responsive right-side inspector with run history, timeline filters, structured evidence, export, durations, failed steps, usage, and redaction counts
 - Automatic database migration from starter kit schema version 1 to version 2
 
 ## Architecture
@@ -80,14 +81,7 @@ npm run check
 
 ## Demo Script
 
-Use these exact steps for the hackathon demo:
-
-1. Create an Agent and open the Playground.
-2. Run a successful task such as: `Create a tiny TypeScript CLI and run its test.`
-3. Open the AgentTrace inspector and show the run summary, durations, steps, and token usage.
-4. Run a failing task such as: `Run cat missing-file-for-demo.txt and explain the failure.`
-5. Open the failing run and identify the exact failed step, its exit status, and the diagnostic detail.
-6. Include a mock secret in a prompt or runtime output and show that AgentTrace stores `[REDACTED]` instead of the raw value.
+Use the repeatable script in [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) to show one successful run, one failing run, evidence highlighting, filters, export, and redaction.
 
 ## Acceptance Notes
 
@@ -108,6 +102,7 @@ Use these exact steps for the hackathon demo:
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)
+- [Demo script](docs/DEMO_SCRIPT.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Security policy](SECURITY.md)

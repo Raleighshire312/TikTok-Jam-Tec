@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "test": "vitest run --pool=threads",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --pretty false"
   },

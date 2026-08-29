@@ -1,6 +1,7 @@
 import type { AppConfig } from "./config.js";
 
 const REDACTION_TOKEN = "[REDACTED]";
+const MAX_TRACE_TEXT_LENGTH = 4_000;
 
 const literalSecretKeys = ["key", "token", "secret", "password", "passwd", "authorization"];
 
@@ -8,11 +9,16 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function truncate(value: string, maxLength = MAX_TRACE_TEXT_LENGTH): string {
+  if (value.length <= maxLength) return value;
+  return value.slice(0, maxLength) + "... [truncated]";
+}
+
 export class Redactor {
   private readonly literalSecrets: string[];
 
   constructor(config: AppConfig) {
-    this.literalSecrets = [config.arkApiKey, config.authToken, config.arkModel]
+    this.literalSecrets = [config.arkApiKey, config.authToken]
       .map((value) => value.trim())
       .filter((value) => value.length >= 6 && !value.startsWith("replace-"));
   }
@@ -32,8 +38,12 @@ export class Redactor {
     const replacements: Array<[RegExp, string]> = [
       [/\b(?:sk|rk|pk)_[A-Za-z0-9_-]{8,}\b/g, REDACTION_TOKEN],
       [/\bAKIA[0-9A-Z]{16}\b/g, REDACTION_TOKEN],
+      [/\bASIA[0-9A-Z]{16}\b/g, REDACTION_TOKEN],
       [/\b(?:ghp|github_pat)_[A-Za-z0-9_]{10,}\b/g, REDACTION_TOKEN],
-      [/\bBearer\s+[A-Za-z0-9._-]{12,}\b/gi, "Bearer " + REDACTION_TOKEN],
+      [/\bBearer\s+[A-Za-z0-9._=-]{12,}\b/gi, "Bearer " + REDACTION_TOKEN],
+      [/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9._-]{10,}\.[A-Za-z0-9._-]{10,}\b/g, REDACTION_TOKEN],
+      [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, REDACTION_TOKEN],
+      [/\b(?:postgres|mysql|mongodb(?:\+srv)?|redis):\/\/[^\s"'`]+/gi, REDACTION_TOKEN],
       [
         /\b([A-Za-z0-9_.-]{0,32}(?:key|token|secret|password)[A-Za-z0-9_.-]{0,32})\s*[:=]\s*(['"]?)([^'"\s]{6,})\2/gi,
         "$1=" + REDACTION_TOKEN,
@@ -47,7 +57,8 @@ export class Redactor {
       }
     }
 
-    return { value: next, redacted };
+    const truncated = truncate(next);
+    return { value: truncated, redacted: redacted || truncated !== value };
   }
 
   redactUnknown<T>(value: T): { value: T; redacted: boolean } {

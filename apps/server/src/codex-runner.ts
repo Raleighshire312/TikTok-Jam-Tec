@@ -6,17 +6,23 @@ import { RunCancelledError } from "./errors.js";
 import type {
   AgentRunner,
   RunnerObserver,
+  RunnerRequest,
+  RunnerResult,
   RunUsage,
   TraceEventDetail,
   TraceKind,
+  TraceSpanMetadata,
   TraceStatus,
-  RunnerRequest,
-  RunnerResult,
 } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
+function operationSpanId(runId: string, suffix: string): string {
+  return runId + ":" + suffix;
+}
+
 export interface ParsedEvents {
+  runId: string;
   messages: string[];
   threadId: string | null;
   usage: RunUsage | null;
@@ -25,10 +31,12 @@ export interface ParsedEvents {
   items: Map<
     string,
     {
+      spanId: string;
       kind: TraceKind;
       label: string;
       startedAt: string;
       detail: TraceEventDetail | null;
+      metadata: TraceSpanMetadata | null;
     }
   >;
 }
@@ -76,11 +84,25 @@ function itemLabel(type: string, item: Record<string, unknown>): string {
   if (type === "command_execution") return "Command";
   if (type === "file_change") return "File change";
   if (type === "agent_message") return "Assistant message";
+  if (type.includes("reason")) return "Reasoning step observed";
   if (type.includes("mcp") || type.includes("tool")) {
     return typeof item.name === "string" ? item.name : "Tool call";
   }
   if (type.includes("search")) return "Web search";
   return type.replaceAll("_", " ");
+}
+
+function itemMetadata(type: string, item: Record<string, unknown>): TraceSpanMetadata | null {
+  if (type.includes("mcp") || type.includes("tool")) {
+    const toolName =
+      typeof item.name === "string"
+        ? item.name
+        : typeof item.tool_name === "string"
+          ? item.tool_name
+          : null;
+    return toolName ? { toolName } : null;
+  }
+  return null;
 }
 
 function itemDetail(type: string, item: Record<string, unknown>): TraceEventDetail | null {
@@ -120,7 +142,6 @@ function itemDetail(type: string, item: Record<string, unknown>): TraceEventDeta
           : typeof item.tool_name === "string"
             ? item.tool_name
             : undefined,
-      text: typeof item.arguments === "string" ? item.arguments : undefined,
     });
   }
   if (type.includes("search")) {
@@ -135,6 +156,9 @@ function itemDetail(type: string, item: Record<string, unknown>): TraceEventDeta
   }
   if (type === "agent_message") {
     return typeof item.text === "string" ? { text: item.text } : null;
+  }
+  if (type.includes("reason")) {
+    return { note: "Reasoning step observed" };
   }
   return null;
 }
@@ -183,6 +207,8 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
       kind: "error",
       status: "failed",
       label: "Malformed event",
+      spanId: operationSpanId(parsed.runId, "error:malformed"),
+      actorType: "agent",
       detail: { error: "Codex emitted malformed JSON" },
     });
     return;
@@ -193,9 +219,12 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
     emit(parsed, {
       source: "codex",
       kind: "lifecycle",
-      status: "running",
+      status: "info",
       label: "Codex session started",
-      detail: { note: event.thread_id },
+      spanId: operationSpanId(parsed.runId, "session:" + event.thread_id),
+      actorType: "agent",
+      metadata: { providerSessionId: event.thread_id },
+      detail: { note: "Codex thread attached" },
     });
   }
 
@@ -211,13 +240,14 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
     parsed.usage = usageFromObject(usage);
     emit(parsed, {
       source: "codex",
-      kind: "usage",
+      kind: "model_call",
       status: "completed",
-      label: "Model usage",
+      label: "Model call",
+      spanId: operationSpanId(parsed.runId, "model"),
+      actorType: "agent",
       usage: {
         ...parsed.usage,
-        totalTokens:
-          (parsed.usage.inputTokens ?? 0) + (parsed.usage.outputTokens ?? 0),
+        totalTokens: (parsed.usage.inputTokens ?? 0) + (parsed.usage.outputTokens ?? 0),
       },
     });
   }
@@ -227,14 +257,16 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
       typeof event.message === "string"
         ? event.message
         : typeof event.error === "string"
-        ? event.error
-        : "Codex reported an unknown error";
+          ? event.error
+          : "Codex reported an unknown error";
     parsed.errors.push(message);
     emit(parsed, {
       source: "codex",
       kind: "error",
       status: "failed",
       label: "Runtime error",
+      spanId: operationSpanId(parsed.runId, "error:" + parsed.errors.length),
+      actorType: "agent",
       detail: { error: message },
     });
   }
@@ -251,25 +283,38 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
     const label = itemLabel(type, item);
     const detail = itemDetail(type, item);
     const status = itemStatus(String(event.type), item);
+    const metadata = itemMetadata(type, item);
+    const spanId = itemId ? operationSpanId(parsed.runId, "item:" + itemId) : operationSpanId(parsed.runId, "event:" + eventTimestamp());
     const started = itemId ? parsed.items.get(itemId) : null;
     const startedAt =
       started?.startedAt ??
       (typeof item.started_at === "string" ? item.started_at : eventTimestamp());
+
     if (event.type === "item.started" && itemId) {
-      parsed.items.set(itemId, { kind, label, startedAt, detail });
+      parsed.items.set(itemId, { spanId, kind, label, startedAt, detail, metadata });
     }
+
     if (event.type === "item.completed" && itemId) {
       parsed.items.delete(itemId);
     }
+
     emit(parsed, {
       source: "codex",
       kind,
       status,
       label,
+      spanId: started?.spanId ?? spanId,
+      parentSpanId: operationSpanId(parsed.runId, "root"),
+      actorType: "agent",
+      metadata: started?.metadata ?? metadata,
       itemId,
       startedAt: event.type === "item.started" ? startedAt : started?.startedAt ?? startedAt,
       completedAt:
-        event.type === "item.completed" ? typeof item.completed_at === "string" ? item.completed_at : eventTimestamp() : null,
+        event.type === "item.completed"
+          ? typeof item.completed_at === "string"
+            ? item.completed_at
+            : eventTimestamp()
+          : null,
       durationMs:
         event.type === "item.completed"
           ? Date.parse(typeof item.completed_at === "string" ? item.completed_at : eventTimestamp()) -
@@ -292,6 +337,10 @@ export function reconcileOpenTraceItems(
       kind: item.kind,
       status,
       label: item.label,
+      spanId: item.spanId,
+      parentSpanId: operationSpanId(parsed.runId, "root"),
+      actorType: "agent",
+      metadata: item.metadata,
       itemId,
       startedAt: item.startedAt,
       completedAt,
@@ -366,6 +415,7 @@ export class CodexRunner implements AgentRunner {
     this.active.set(request.agentId, active);
 
     const parsed: ParsedEvents = {
+      runId: request.runId,
       messages: [],
       threadId: request.threadId,
       usage: null,

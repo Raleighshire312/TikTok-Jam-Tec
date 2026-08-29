@@ -4,20 +4,56 @@ import { isArkConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
 import { Redactor } from "./redaction.js";
 import { JsonStore } from "./store.js";
+import { diagnoseTrace, isTraceFailureEvent, summarizeFirstFailure } from "./trace-diagnosis.js";
 import type {
   Agent,
   AgentRun,
   AgentRunner,
   CreateAgentInput,
   Message,
+  RunTrace,
   RunnerObserver,
   RunnerTraceEventInput,
+  SendMessageInput,
   TraceEvent,
+  TraceEventDetail,
+  TraceKind,
+  TraceSpanMetadata,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 
 const now = () => new Date().toISOString();
+
+function rootSpanId(runId: string): string {
+  return runId + ":root";
+}
+
+function modelSpanId(runId: string): string {
+  return runId + ":model";
+}
+
+function messageSpanId(messageId: string): string {
+  return "message:" + messageId;
+}
+
+function mergeTraceDetail(
+  current: TraceEventDetail | null,
+  next: TraceEventDetail | null,
+): TraceEventDetail | null {
+  if (!current) return next;
+  if (!next) return current;
+  return { ...current, ...next };
+}
+
+function mergeTraceMetadata(
+  current: TraceSpanMetadata | null,
+  next: TraceSpanMetadata | null,
+): TraceSpanMetadata | null {
+  if (!current) return next;
+  if (!next) return current;
+  return { ...current, ...next };
+}
 
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
@@ -37,31 +73,29 @@ export class AgentService {
     await this.store.initialize();
     await this.workspaces.initialize();
     await this.store.mutate((database) => {
+      const completedAt = now();
       for (const run of database.runs) {
         if (run.status === "queued" || run.status === "running") {
           run.status = "cancelled";
           run.error = "Server restarted while this run was active";
-          run.completedAt = now();
+          run.completedAt = completedAt;
         }
       }
       for (const event of database.traceEvents) {
         if (!event.completedAt && (event.status === "queued" || event.status === "running")) {
           event.status = "cancelled";
-          event.completedAt = now();
+          event.completedAt = completedAt;
           event.durationMs =
-            event.startedAt === null
-              ? null
-              : Date.parse(event.completedAt) - Date.parse(event.startedAt);
-          event.detail = {
-            ...(event.detail ?? {}),
+            event.startedAt === null ? null : Date.parse(completedAt) - Date.parse(event.startedAt);
+          event.detail = mergeTraceDetail(event.detail, {
             note: "Server restarted before this step finished",
-          };
+          });
         }
       }
       for (const agent of database.agents) {
         if (agent.status === "busy") {
           agent.status = "ready";
-          agent.updatedAt = now();
+          agent.updatedAt = completedAt;
         }
       }
     });
@@ -91,6 +125,7 @@ export class AgentService {
       instructions: input.instructions?.trim() ?? "",
       status: "ready",
       workspacePath: this.workspaces.workspacePath(id),
+      sessionId: randomUUID(),
       codexThreadId: null,
       lastError: null,
       createdAt: timestamp,
@@ -172,7 +207,7 @@ export class AgentService {
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
-  getTrace(runId: string): { run: AgentRun; traceEvents: TraceEvent[]; summary: Record<string, number | null> } {
+  getTrace(runId: string): RunTrace {
     const snapshot = this.store.snapshot();
     const run = snapshot.runs.find((item) => item.id === runId);
     if (!run) {
@@ -186,9 +221,7 @@ export class AgentService {
       .filter((value): value is NonNullable<typeof value> => value !== null)
       .at(-1);
     const failedSteps = traceEvents.filter(
-      (event) =>
-        event.kind !== "lifecycle" &&
-        (event.status === "failed" || event.status === "cancelled"),
+      (event) => event.kind !== "lifecycle" && isTraceFailureEvent(event),
     ).length;
     const redactionCount = traceEvents.filter((event) => event.redacted).length;
     return {
@@ -205,6 +238,8 @@ export class AgentService {
         inputTokens: usage?.inputTokens ?? run.usage?.inputTokens ?? null,
         cachedInputTokens: usage?.cachedInputTokens ?? run.usage?.cachedInputTokens ?? null,
         outputTokens: usage?.outputTokens ?? run.usage?.outputTokens ?? null,
+        diagnosis: diagnoseTrace(run, traceEvents),
+        firstFailure: summarizeFirstFailure(run, traceEvents),
       },
     };
   }
@@ -212,6 +247,7 @@ export class AgentService {
   async sendMessage(
     agentId: string,
     prompt: string,
+    retryOfRunId: string | null = null,
   ): Promise<{ run: AgentRun; message: Message }> {
     if (!isArkConfigured(this.config)) {
       throw new HttpError(
@@ -219,29 +255,10 @@ export class AgentService {
         "Ark is not configured. Set ARK_API_KEY and ARK_MODEL, then restart.",
       );
     }
-    const timestamp = now();
-    const runId = randomUUID();
-    const redactedPrompt = this.redactor.redactText(prompt);
-    const run: AgentRun = {
-      id: runId,
-      agentId,
-      status: "queued",
-      prompt: redactedPrompt.value,
-      output: null,
-      error: null,
-      usage: null,
-      startedAt: null,
-      completedAt: null,
-      createdAt: timestamp,
-    };
-    const message: Message = {
-      id: randomUUID(),
-      agentId,
-      runId,
-      role: "user",
-      content: redactedPrompt.value,
-      createdAt: timestamp,
-    };
+
+    const redactedPrompt = this.redactor.redactText(prompt.trim());
+    let run!: AgentRun;
+    let message!: Message;
     const agentAtStart = await this.store.mutate((database) => {
       const storedAgent = database.agents.find((item) => item.id === agentId);
       if (!storedAgent) {
@@ -253,22 +270,76 @@ export class AgentService {
       if (storedAgent.status === "busy") {
         throw new HttpError(409, "This Agent is already running");
       }
+
+      let retryAttempt = 1;
+      if (retryOfRunId) {
+        const retryRun = database.runs.find((item) => item.id === retryOfRunId);
+        if (!retryRun || retryRun.agentId !== agentId) {
+          throw new HttpError(404, "Retry source run not found for this Agent");
+        }
+        if (retryRun.status === "queued" || retryRun.status === "running") {
+          throw new HttpError(409, "Finish the referenced run before retrying it");
+        }
+        retryAttempt = retryRun.attempt + 1;
+      }
+
+      const timestamp = now();
+      run = {
+        id: randomUUID(),
+        agentId,
+        traceId: randomUUID(),
+        sessionId: storedAgent.sessionId,
+        agentVersion: this.config.agentVersion,
+        retryOfRunId,
+        attempt: retryAttempt,
+        status: "queued",
+        prompt: redactedPrompt.value,
+        output: null,
+        error: null,
+        usage: null,
+        startedAt: null,
+        completedAt: null,
+        createdAt: timestamp,
+      };
+      message = {
+        id: randomUUID(),
+        agentId,
+        runId: run.id,
+        role: "user",
+        content: redactedPrompt.value,
+        createdAt: timestamp,
+      };
       database.runs.push(run);
       database.messages.push(message);
-      const snapshot = structuredClone(storedAgent);
       storedAgent.status = "busy";
       storedAgent.lastError = null;
       storedAgent.updatedAt = timestamp;
-      this.appendTraceEvent(database, runId, agentId, {
+
+      this.appendTraceEvent(database, run.id, {
         source: "service",
         kind: "lifecycle",
         status: "queued",
-        label: "Run queued",
+        label: "Run",
+        spanId: rootSpanId(run.id),
+        actorType: "agent",
+        metadata: this.buildRuntimeMetadata(storedAgent.codexThreadId),
+      });
+      this.appendTraceEvent(database, run.id, {
+        source: "service",
+        kind: "message",
+        status: "completed",
+        label: "User message",
+        spanId: messageSpanId(message.id),
+        parentSpanId: rootSpanId(run.id),
+        actorType: "human",
+        startedAt: timestamp,
+        completedAt: timestamp,
         detail: { text: redactedPrompt.value },
       });
-      return snapshot;
+      return structuredClone(storedAgent);
     });
-    const execution = this.executeRun(agentAtStart, run, prompt);
+
+    const execution = this.executeRun(agentAtStart, run, prompt.trim());
     this.activeExecutions.set(agentId, execution);
     void execution
       .finally(() => {
@@ -289,9 +360,7 @@ export class AgentService {
       codexSandboxMode: this.config.codexSandboxMode,
       runtimeProvider: this.config.runtimeProvider,
       containerEngine:
-        this.config.runtimeProvider === "container"
-          ? this.config.containerEngine
-          : null,
+        this.config.runtimeProvider === "container" ? this.config.containerEngine : null,
       runtime:
         this.config.runtimeProvider === "container"
           ? "Codex CLI in " + this.config.containerEngine + " Runtime"
@@ -302,36 +371,54 @@ export class AgentService {
   private async executeRun(agentAtStart: Agent, run: AgentRun, rawPrompt: string): Promise<void> {
     await this.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === run.id);
-      if (storedRun) {
-        storedRun.status = "running";
-        storedRun.startedAt = now();
-        this.appendTraceEvent(database, run.id, run.agentId, {
-          source: "service",
-          kind: "lifecycle",
-          status: "running",
-          label: "Run started",
-          startedAt: storedRun.startedAt,
-        });
-      }
+      if (!storedRun) return;
+      storedRun.status = "running";
+      storedRun.startedAt = now();
+      this.appendTraceEvent(database, run.id, {
+        source: "service",
+        kind: "lifecycle",
+        status: "running",
+        label: "Run",
+        spanId: rootSpanId(run.id),
+        actorType: "agent",
+        startedAt: storedRun.startedAt,
+        metadata: this.buildRuntimeMetadata(agentAtStart.codexThreadId),
+      });
+      this.appendTraceEvent(database, run.id, {
+        source: "service",
+        kind: "model_call",
+        status: "running",
+        label: "Model call",
+        spanId: modelSpanId(run.id),
+        parentSpanId: rootSpanId(run.id),
+        actorType: "agent",
+        startedAt: storedRun.startedAt,
+        metadata: this.buildRuntimeMetadata(agentAtStart.codexThreadId),
+      });
     });
+
     let traceQueue = Promise.resolve();
     const observer: RunnerObserver = {
       onEvent: (event) => {
-        traceQueue = traceQueue.then(() => this.recordTraceEvent(run.id, run.agentId, event));
+        traceQueue = traceQueue.then(() => this.recordTraceEvent(run.id, event));
         return traceQueue;
       },
     };
+
     try {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
-      const result = await this.runner.run({
-        runId: run.id,
-        agentId: agentAtStart.id,
-        workspacePath: agentAtStart.workspacePath,
-        prompt: rawPrompt,
-        threadId: agentAtStart.codexThreadId,
-      }, observer);
+      const result = await this.runner.run(
+        {
+          runId: run.id,
+          agentId: agentAtStart.id,
+          workspacePath: agentAtStart.workspacePath,
+          prompt: rawPrompt,
+          threadId: agentAtStart.codexThreadId,
+        },
+        observer,
+      );
       await traceQueue;
       const completedAt = now();
       const redactedOutput = this.redactor.redactText(result.output);
@@ -352,17 +439,19 @@ export class AgentService {
           createdAt: completedAt,
         });
         this.closeOpenTraceEvents(database, run.id, "completed", completedAt, "Run completed");
-        this.appendTraceEvent(database, run.id, run.agentId, {
+        this.appendTraceEvent(database, run.id, {
           source: "service",
           kind: "lifecycle",
           status: "completed",
-          label: "Run completed",
+          label: "Run",
+          spanId: rootSpanId(run.id),
+          actorType: "agent",
           completedAt,
+          metadata: this.buildRuntimeMetadata(result.threadId),
           usage: result.usage
             ? {
                 ...result.usage,
-                totalTokens:
-                  (result.usage.inputTokens ?? 0) + (result.usage.outputTokens ?? 0),
+                totalTokens: (result.usage.inputTokens ?? 0) + (result.usage.outputTokens ?? 0),
               }
             : null,
         });
@@ -392,13 +481,16 @@ export class AgentService {
           completedAt,
           redactedError.value,
         );
-        this.appendTraceEvent(database, run.id, run.agentId, {
+        this.appendTraceEvent(database, run.id, {
           source: "service",
           kind: "lifecycle",
           status: cancelled ? "cancelled" : "failed",
-          label: cancelled ? "Run cancelled" : "Run failed",
+          label: "Run",
+          spanId: rootSpanId(run.id),
+          actorType: "agent",
           completedAt,
           detail: { error: redactedError.value },
+          metadata: this.buildRuntimeMetadata(agent?.codexThreadId ?? agentAtStart.codexThreadId),
         });
         if (agent) {
           if (agent.status !== "stopped") {
@@ -411,35 +503,69 @@ export class AgentService {
     }
   }
 
-  private async recordTraceEvent(
-    runId: string,
-    agentId: string,
-    event: RunnerTraceEventInput,
-  ): Promise<void> {
+  private async recordTraceEvent(runId: string, event: RunnerTraceEventInput): Promise<void> {
     await this.store.mutate((database) => {
-      this.appendTraceEvent(database, runId, agentId, event);
+      this.appendTraceEvent(database, runId, event);
     });
   }
 
   private appendTraceEvent(
     database: {
+      runs: AgentRun[];
       traceEvents: TraceEvent[];
     },
     runId: string,
-    agentId: string,
     event: RunnerTraceEventInput,
   ): void {
+    const run = database.runs.find((item) => item.id === runId);
+    if (!run) return;
+
+    const spanId = event.spanId ?? randomUUID();
     const startedAt = event.startedAt ?? (event.status === "running" ? now() : null);
     const completedAt =
       event.completedAt ??
       (event.status === "completed" || event.status === "failed" || event.status === "cancelled"
         ? now()
         : null);
-    const redactedDetail = this.redactor.redactUnknown(event.detail ?? null);
+    const sanitizedDetail = this.sanitizeTraceDetail(event.kind, event.detail ?? null);
+    const sanitizedMetadata = this.sanitizeTraceMetadata(event.metadata ?? null);
+    const existing = database.traceEvents.find(
+      (item) => item.runId === runId && item.spanId === spanId,
+    );
+
+    if (existing) {
+      existing.source = event.source;
+      existing.kind = event.kind;
+      existing.status = event.status;
+      existing.label = event.label;
+      existing.parentSpanId = event.parentSpanId ?? existing.parentSpanId;
+      existing.actorType = event.actorType ?? existing.actorType;
+      existing.itemId = event.itemId ?? existing.itemId;
+      existing.startedAt = existing.startedAt ?? startedAt;
+      existing.completedAt = completedAt ?? existing.completedAt;
+      existing.durationMs =
+        event.durationMs ??
+        (existing.startedAt && existing.completedAt
+          ? Date.parse(existing.completedAt) - Date.parse(existing.startedAt)
+          : existing.durationMs);
+      existing.detail = mergeTraceDetail(existing.detail, sanitizedDetail.value);
+      existing.usage = event.usage ?? existing.usage;
+      existing.metadata = mergeTraceMetadata(existing.metadata, sanitizedMetadata.value);
+      existing.redacted = existing.redacted || sanitizedDetail.redacted || sanitizedMetadata.redacted;
+      return;
+    }
+
     database.traceEvents.push({
       id: randomUUID(),
       runId,
-      agentId,
+      agentId: run.agentId,
+      traceId: run.traceId,
+      spanId,
+      parentSpanId: event.parentSpanId ?? null,
+      sessionId: run.sessionId,
+      agentVersion: run.agentVersion,
+      actorType: event.actorType ?? "agent",
+      metadata: sanitizedMetadata.value,
       sequence:
         database.traceEvents.reduce(
           (max, item) => (item.runId === runId ? Math.max(max, item.sequence) : max),
@@ -455,9 +581,9 @@ export class AgentService {
       durationMs:
         event.durationMs ??
         (startedAt && completedAt ? Date.parse(completedAt) - Date.parse(startedAt) : null),
-      detail: redactedDetail.value,
+      detail: sanitizedDetail.value,
       usage: event.usage ?? null,
-      redacted: redactedDetail.redacted,
+      redacted: sanitizedDetail.redacted || sanitizedMetadata.redacted,
       createdAt: now(),
     });
   }
@@ -481,9 +607,97 @@ export class AgentService {
         event.completedAt = completedAt;
         event.durationMs =
           event.startedAt === null ? null : Date.parse(completedAt) - Date.parse(event.startedAt);
-        event.detail = { ...(event.detail ?? {}), note };
+        event.detail = mergeTraceDetail(event.detail, { note });
       }
     }
+  }
+
+  private buildRuntimeMetadata(providerSessionId: string | null): TraceSpanMetadata {
+    return {
+      providerSessionId,
+      arkBaseUrl: this.config.arkBaseUrl,
+      arkModelId: this.config.arkModel || null,
+      runtimeProvider: this.config.runtimeProvider,
+      sandboxMode: this.config.codexSandboxMode,
+      runtimeInstanceId: this.config.runtimeInstanceId,
+      containerEngine: this.config.runtimeProvider === "container" ? this.config.containerEngine : null,
+      containerImage:
+        this.config.runtimeProvider === "container" ? this.config.containerRuntimeImage : null,
+      platform: process.platform,
+      architecture: process.arch,
+    };
+  }
+
+  private sanitizeTraceDetail(
+    kind: TraceKind,
+    detail: TraceEventDetail | null,
+  ): { value: TraceEventDetail | null; redacted: boolean } {
+    if (!detail) return { value: null, redacted: false };
+    let redacted = false;
+    const next: TraceEventDetail = {};
+
+    const assignText = (key: keyof TraceEventDetail, value: string | undefined) => {
+      if (value === undefined) return;
+      const result = this.redactor.redactText(value);
+      (next as Record<string, string | number | undefined>)[key] = result.value;
+      redacted = redacted || result.redacted;
+    };
+
+    if (kind === "reasoning") {
+      next.note = "Reasoning step observed";
+      return { value: next, redacted: false };
+    }
+
+    assignText("text", detail.text);
+    assignText("command", detail.command);
+    if (typeof detail.exitCode === "number") next.exitCode = detail.exitCode;
+    assignText("filePath", detail.filePath);
+    assignText("changeType", detail.changeType);
+    assignText("toolName", detail.toolName);
+    assignText("query", detail.query);
+    assignText("error", detail.error);
+    assignText("note", detail.note);
+
+    return {
+      value: Object.keys(next).length > 0 ? next : null,
+      redacted,
+    };
+  }
+
+  private sanitizeTraceMetadata(
+    metadata: TraceSpanMetadata | null,
+  ): { value: TraceSpanMetadata | null; redacted: boolean } {
+    if (!metadata) return { value: null, redacted: false };
+    let redacted = false;
+    const next: TraceSpanMetadata = {};
+
+    const assign = (key: keyof TraceSpanMetadata, value: string | null | undefined) => {
+      if (value === undefined) return;
+      if (value === null) {
+        (next as Record<string, string | null | undefined>)[key] = null;
+        return;
+      }
+      const result = this.redactor.redactText(value);
+      (next as Record<string, string | null | undefined>)[key] = result.value;
+      redacted = redacted || result.redacted;
+    };
+
+    assign("providerSessionId", metadata.providerSessionId);
+    assign("arkBaseUrl", metadata.arkBaseUrl);
+    assign("arkModelId", metadata.arkModelId);
+    if (metadata.runtimeProvider !== undefined) next.runtimeProvider = metadata.runtimeProvider;
+    assign("sandboxMode", metadata.sandboxMode);
+    assign("runtimeInstanceId", metadata.runtimeInstanceId);
+    assign("containerEngine", metadata.containerEngine);
+    assign("containerImage", metadata.containerImage);
+    assign("toolName", metadata.toolName);
+    assign("platform", metadata.platform);
+    assign("architecture", metadata.architecture);
+
+    return {
+      value: Object.keys(next).length > 0 ? next : null,
+      redacted,
+    };
   }
 
   private async setStatus(id: string, status: Agent["status"]): Promise<Agent> {

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
@@ -32,6 +33,7 @@ const envSchema = z.object({
     .max(48)
     .regex(/^[a-zA-Z0-9_.-]+$/)
     .default("default"),
+  AGENT_VERSION: z.string().trim().min(1).max(64).optional(),
   APP_AUTH_TOKEN: z
     .string()
     .trim()
@@ -46,6 +48,18 @@ const envSchema = z.object({
     .default("https://ark.cn-beijing.volces.com/api/v3"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
+
+const defaultAgentVersion = (() => {
+  try {
+    const raw = readFileSync(new URL("../../../package.json", import.meta.url), "utf8");
+    const parsed = JSON.parse(raw) as { version?: unknown };
+    return typeof parsed.version === "string" && parsed.version.trim().length > 0
+      ? parsed.version.trim()
+      : "1.0.0";
+  } catch {
+    return "1.0.0";
+  }
+})();
 
 export type AppConfig = ReturnType<typeof loadConfig>;
 
@@ -83,6 +97,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     containerPidsLimit: env.CONTAINER_PIDS_LIMIT,
     containerUser: env.CONTAINER_USER?.trim() || defaultContainerUser,
     runtimeInstanceId: env.RUNTIME_INSTANCE_ID,
+    agentVersion: env.AGENT_VERSION?.trim() || defaultAgentVersion,
     authToken,
     arkApiKey: env.ARK_API_KEY?.trim() ?? "",
     arkModel: env.ARK_MODEL?.trim() ?? "",

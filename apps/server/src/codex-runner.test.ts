@@ -47,6 +47,7 @@ describe("Codex runner protocol", () => {
   it("extracts the session, final message and usage", () => {
     const events: unknown[] = [];
     const parsed: ParsedEvents = {
+      runId: "run-1",
       messages: [] as string[],
       threadId: null as string | null,
       usage: null as {
@@ -89,6 +90,7 @@ describe("Codex runner protocol", () => {
   it("captures failed commands and reconciles unfinished items", () => {
     const events: Array<Record<string, unknown>> = [];
     const parsed: ParsedEvents = {
+      runId: "run-1",
       messages: [],
       threadId: null,
       usage: null,

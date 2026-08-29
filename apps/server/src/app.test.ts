@@ -7,7 +7,26 @@ import type { AgentService } from "./agent-service.js";
 const service = {
   listAgents: () => [],
   systemInfo: async () => ({}),
-  getTrace: () => ({ run: { id: "run", agentId: "agent", status: "completed" }, traceEvents: [], summary: {} }),
+  getTrace: () => ({
+    run: { id: "run", agentId: "agent", status: "completed" },
+    traceEvents: [],
+    summary: {
+      durationMs: null,
+      stepCount: 0,
+      failedSteps: 0,
+      redactionCount: 0,
+      inputTokens: null,
+      cachedInputTokens: null,
+      outputTokens: null,
+      diagnosis: {
+        severity: "success",
+        headline: "Run completed successfully",
+        cause: "No actionable failures were recorded.",
+        evidenceEventId: null,
+        suggestedAction: "Export the trace for review.",
+      },
+    },
+  }),
 } as unknown as AgentService;
 
 describe("HTTP boundary", () => {
