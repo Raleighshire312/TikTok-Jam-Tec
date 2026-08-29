@@ -35,7 +35,77 @@ export interface AgentRun {
     cachedInputTokens?: number;
     outputTokens?: number;
   } | null;
+  startedAt: string | null;
+  completedAt: string | null;
   createdAt: string;
+}
+
+export type TraceSource = "service" | "codex";
+export type TraceKind =
+  | "lifecycle"
+  | "message"
+  | "command"
+  | "file_change"
+  | "tool_call"
+  | "web_search"
+  | "reasoning"
+  | "error"
+  | "usage"
+  | "unknown";
+export type TraceStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "info";
+
+export interface TraceEvent {
+  id: string;
+  runId: string;
+  agentId: string;
+  sequence: number;
+  source: TraceSource;
+  kind: TraceKind;
+  status: TraceStatus;
+  label: string;
+  itemId: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  durationMs: number | null;
+  detail: {
+    text?: string;
+    command?: string;
+    exitCode?: number;
+    filePath?: string;
+    changeType?: string;
+    toolName?: string;
+    query?: string;
+    error?: string;
+    note?: string;
+  } | null;
+  usage: {
+    inputTokens?: number;
+    cachedInputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+  } | null;
+  redacted: boolean;
+  createdAt: string;
+}
+
+export interface RunTrace {
+  run: AgentRun;
+  traceEvents: TraceEvent[];
+  summary: {
+    durationMs: number | null;
+    stepCount: number | null;
+    failedSteps: number | null;
+    redactionCount: number | null;
+    inputTokens: number | null;
+    cachedInputTokens: number | null;
+    outputTokens: number | null;
+  };
 }
 
 export interface SystemInfo {
