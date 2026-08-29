@@ -1,82 +1,78 @@
-# Architecture
+# AgentTrace Architecture
 
-Volc Agent Launchpad is a single-node control plane for hackathon use.
+AgentTrace keeps the starter kit flow intact, then inserts trace capture and redaction into the backend path that already owns run execution.
+
+## One-page view
 
 ```mermaid
 flowchart LR
-    UI["React Web UI"] --> API["Fastify API"]
+    Browser["Browser UI<br/>Playground + Inspector"] --> API["Fastify API"]
     API --> Service["AgentService"]
-    Service --> Store["JSON store"]
+    Service --> Redactor["Redactor"]
+    Service --> Store["launchpad.json v2<br/>agents, messages, runs, traceEvents"]
     Service --> Workspace["Agent workspace"]
     Service --> Runner{"AgentRunner"}
-    Runner -->|Local POC| Container["Disposable Runtime container"]
-    Runner -->|ECS| Process["Codex child process"]
-    Container --> Ark["Volcengine Ark"]
-    Process --> Ark
+    Runner -->|local-process| Codex["Codex CLI child process"]
+    Runner -->|container| Runtime["Disposable runtime container"]
+    Codex --> Ark["Volcengine Ark Responses API"]
+    Runtime --> Ark
+
+    subgraph TrustBoundary["Ark trust boundary"]
+      Ark
+    end
 ```
 
-## Components
+## Flow
 
-### Web UI
+1. The browser sends a prompt to the Fastify API.
+2. `AgentService` creates a queued run, stores the redacted prompt, and appends the first lifecycle trace event.
+3. The runner executes Codex and streams JSON events.
+4. Runtime events are normalized into a small `TraceEvent` model and passed back through the observer.
+5. `AgentService` redacts safe detail fields again before persisting them into `traceEvents`.
+6. The browser polls the run and trace endpoints until the run reaches a terminal state.
+7. The inspector renders ordered steps, durations, failed commands, usage, and redaction counts.
 
-Lists Agents, manages lifecycle actions, submits prompts, and polls asynchronous
-Runs. It never receives the Ark API key.
-
-### Fastify API
-
-Validates requests, protects remote demos with a shared bearer token, and
-serves the compiled Web UI. The token is not user identity or authorization.
+## Main Components
 
 ### AgentService
 
-Coordinates lifecycle state, persistence, workspaces, and Runs. One Agent can
-have only one active Run.
+- Owns run lifecycle state
+- Ensures one active run per Agent
+- Records lifecycle trace events
+- Closes unfinished trace steps on restart, cancellation, timeout, or failure
 
-```text
-ready -> busy -> ready
-  |       |
-  v       v
-stopped  error
-```
+### Redactor
 
-Interrupted Runs become `cancelled` after a restart.
+- Replaces configured secrets
+- Replaces bearer tokens and common API-key formats
+- Redacts values attached to key, token, secret, and password fields
+- Prevents raw prompt, output, and error strings from reaching disk
 
-### Storage
+### JsonStore v2
 
-```text
-data/launchpad.json       Agent, message, and Run metadata
-workspaces/AgentID/       Agent-created files
-workspaces/.deleted/      Archived deleted workspaces
-codex-home/               Codex configuration and sessions
-```
+- Migrates v1 starter data automatically
+- Persists `traceEvents` alongside existing agent, message, and run records
+- Serializes writes so rapid runtime events keep deterministic ordering
 
-`JsonStore` serializes writes and atomically replaces one JSON file. It supports
-one process only.
+### Runners
 
-### Runtime providers
+- `CodexRunner` covers local process execution
+- `ContainerCodexRunner` covers disposable local runtime containers
+- Both emit the same normalized runtime event model
 
-- `CodexRunner` runs Codex inside the application container for ECS.
-- `ContainerCodexRunner` starts one disposable Docker, Colima, or Podman
-  container for every local turn.
+## Data Model
 
-Both providers use argv-only process execution, bound output and time, resume
-the stored Codex thread, and escalate termination after a grace period.
+Each trace record stores:
 
-## Deployment profiles
+- run and agent identifiers
+- deterministic sequence number
+- source, kind, and status
+- label
+- item correlation id when available
+- started and completed timestamps
+- duration
+- minimal safe detail
+- usage
+- whether redaction was applied
 
-| Profile | Control plane | Agent execution |
-| --- | --- | --- |
-| Local POC | Host Node.js | Disposable local container |
-| ECS | Application container | Codex process in the same container |
-| Local development | Host Node.js | Host Codex process |
-
-## Extension seams
-
-| Track | Primary seam | Expected change |
-| --- | --- | --- |
-| Glass Box | `AgentRunner`, `AgentRun` | Emit and display correlated execution events. |
-| Bouncer | API routes, Agent ownership | Add identity and server-side authorization. |
-| Kill Switch | `AgentRunner` | Add threat-specific policy or a stronger sandbox. |
-
-The current container or ECS instance is the POC trust boundary. Ordinary
-containers are not hardened multi-tenant isolation.
+The store intentionally does not persist raw reasoning or unrestricted runtime payloads.

@@ -1,250 +1,116 @@
-# Volc Agent Launchpad
+# AgentTrace
 
-A minimal Agent platform for three-day middleware hackathons. It provides Agent
-CRUD, a browser Playground, persistent workspaces, and Codex CLI backed by the
-Volcengine Ark Responses API.
+AgentTrace is a TikTok Tech Jam Track 1 Glass Box extension built on top of the Volc Agent Launchpad starter kit. It adds backend trace recording, audit-friendly run history, runtime step correlation, and secret redaction so judges can inspect what an agent actually did while a task was running.
 
-Run it locally with Docker, Colima, or rootless Podman, or deploy it to
-Volcengine ECS.
+## Selected Track
 
-> [!WARNING]
-> This is a single-user proof of concept. It intentionally has no identity,
-> tracing, audit, or hardened sandbox middleware. Do not use production data or
-> credentials. See [SECURITY.md](SECURITY.md).
+`Glass Box: trace and audit`
 
-## Screenshots
+This project intentionally does not implement Kill Switch policy enforcement in v1. The focus is traceability, failure diagnosis, and safe demo output.
 
-### Agent Playground
+## What AgentTrace Adds
 
-![Agent Playground showing lifecycle controls, starter prompts, and the Codex Runtime](docs/assets/playground.jpg)
+- Correlated run timeline stored in the backend
+- Run lifecycle events from queue to terminal state
+- Runtime steps for commands, file changes, tool calls, searches, messages, usage, and errors
+- Secret redaction for stored prompts, messages, outputs, errors, and trace details
+- Responsive right-side inspector with run history, timeline, durations, failed steps, usage, and redaction counts
+- Automatic database migration from starter kit schema version 1 to version 2
 
-### Create an Agent
+## Architecture
 
-![Create Agent form with name, description, and workspace instructions](docs/assets/create-agent.jpg)
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full component view.
 
-## Features
+```mermaid
+flowchart LR
+    Browser["Browser Playground + AgentTrace Inspector"] --> API["Fastify API"]
+    API --> Service["AgentService"]
+    Service --> Redactor["Central redactor"]
+    Service --> Store["JSON store v2<br/>runs + traceEvents"]
+    Service --> Runner{"AgentRunner"}
+    Runner -->|Local process| Codex["Codex CLI"]
+    Runner -->|Container| Runtime["Disposable runtime container"]
+    Codex --> Ark["Volcengine Ark"]
+    Runtime --> Ark
+```
 
-- React and TypeScript Web UI
-- Agent create, edit, start, stop, delete, and multi-turn chat
-- Fastify control plane with asynchronous Run state
-- Persistent Agent workspaces and Codex sessions
-- Disposable Docker, Colima, or Podman container for each local turn
-- Docker and Terraform deployment paths for Volcengine ECS
+Ark credentials stay outside persisted trace data. AgentTrace stores only redacted user-visible details and minimal structured runtime metadata.
 
-## Requirements
+## Local Setup
+
+### Requirements
 
 - Node.js 22+
 - npm 10+
-- Docker, Colima, or Podman
-- A Volcengine Ark API key and endpoint that supports the Responses API
+- Either local Codex CLI or a container engine for the starter runtime path
+- Ark API key and model ID for real runs
 
-Codex CLI is included in the Runtime image and is not required on the host.
-
-## Local browser SOP
-
-### 1. Check the local tools
-
-Install Node.js 22+ and one supported container engine, then verify them:
-
-```bash
-node --version
-npm --version
-docker --version        # Docker Desktop, Docker Engine, or Colima
-podman --version        # Use this instead when running Podman
-```
-
-Only one container engine is required. Codex CLI is already included in the
-Runtime image.
-
-### 2. Clone the repository
-
-```bash
-git clone <repository-url> volc-agent-launchpad
-cd volc-agent-launchpad
-```
-
-Skip this step when already working from the repository root.
-
-### 3. Start the POC
-
-```bash
-ARK_API_KEY=your-ark-api-key \
-ARK_MODEL=ep-your-endpoint-id \
-npm run poc
-```
-
-The first run installs Node.js dependencies and builds the Runtime image. The
-script automatically selects Docker, Colima, or Podman.
-
-### 4. Open the browser
-
-Visit <http://localhost:3000>, or open it from the terminal:
-
-```bash
-open http://localhost:3000       # macOS
-xdg-open http://localhost:3000   # Linux desktop
-```
-
-In the Web UI:
-
-1. Select **Create Agent**.
-2. Enter a name, description, and workspace instructions.
-3. Select **Create Agent** again.
-4. Enter a task in the Playground, for example:
-
-   ```text
-   Create a TypeScript hello-world CLI, add a test, and run it.
-   ```
-
-The Agent can write files, run commands, and continue the same Codex session in
-later messages.
-
-### 5. Stop and resume
-
-Press `Ctrl+C` in the startup terminal. The script removes temporary Runtime
-containers but keeps Agent workspaces and conversations.
-
-- macOS state: `~/.volc-agent-launchpad/`
-- Linux state: `.local/`
-- Custom location: set `LOCAL_POC_DATA_ROOT`
-
-Run the same `npm run poc` command to continue later.
-
-### Select a specific container engine
-
-Force Podman when multiple engines are installed:
-
-```bash
-CONTAINER_ENGINE=podman \
-ARK_API_KEY=your-ark-api-key \
-ARK_MODEL=ep-your-endpoint-id \
-npm run poc
-```
-
-Colima uses `CONTAINER_ENGINE=docker` because it exposes the Docker CLI.
-
-For a clean Linux host, follow the
-[rootless Podman setup](docs/LOCAL_POC.md#rootless-podman-on-linux).
-
-## Docker Compose
-
-Create and edit the configuration:
-
-```bash
-./scripts/bootstrap-local.sh
-```
-
-Required values in `.env`:
-
-```dotenv
-ARK_API_KEY=your-ark-api-key
-ARK_MODEL=ep-your-endpoint-id
-APP_AUTH_TOKEN=replace-with-at-least-24-random-characters
-```
-
-Start the application:
-
-```bash
-docker compose up --build
-```
-
-Open <http://localhost:3000>. Stop it without deleting Agent data:
-
-```bash
-docker compose down
-```
-
-## Development
+### Install and configure
 
 ```bash
 npm install
 cp .env.example .env
-npm install --global @openai/codex@0.111.0
-npm run dev
 ```
 
-- Web UI: <http://localhost:5173>
-- API: <http://localhost:3000>
-
-Use local paths in `.env` when running outside Docker:
+For local development, use paths like:
 
 ```dotenv
 APP_DATA_DIR=.data
 AGENT_WORKSPACE_ROOT=workspaces
 CODEX_HOME=codex-home
+RUNTIME_PROVIDER=local-process
+ARK_API_KEY=your-private-key
+ARK_MODEL=ep-your-model
 ```
 
-## Deployment
-
-- [Existing Linux ECS with Docker](docs/DEPLOYMENT.md#existing-linux-ecs)
-- [Complete Volcengine environment with Terraform](docs/DEPLOYMENT.md#terraform-deployment)
-- [Local Docker, Colima, and Podman details](docs/LOCAL_POC.md)
-
-The existing-ECS script deploys from the current source tree:
+### Start the app
 
 ```bash
-cp .env.example .env.production
-./scripts/deploy-existing-ecs.sh .env.production
+npm run dev
 ```
 
-The Terraform path provisions VPC, subnet, security group, ECS, and EIP:
+- Web UI: [http://localhost:5173](http://localhost:5173)
+- API: [http://localhost:3000](http://localhost:3000)
 
-```bash
-cp deploy/volcengine/terraform.tfvars.example \
-  deploy/volcengine/terraform.tfvars
-./scripts/deploy-volcengine.sh
-```
-
-## Configuration
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `ARK_API_KEY` | Required | Ark model API key. |
-| `ARK_MODEL` | Required | Responses-capable endpoint or model ID. |
-| `ARK_BASE_URL` | Beijing v3 endpoint | Ark OpenAI-compatible API URL. |
-| `APP_AUTH_TOKEN` | Empty on loopback | Shared demo token; use 24+ random characters remotely. |
-| `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
-| `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
-| `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
-| `LOCAL_POC_DATA_ROOT` | Platform-specific | Local metadata, workspace, and session directory. |
-
-See [.env.example](.env.example) for all Runtime and resource-limit options.
-
-## How it works
-
-```mermaid
-flowchart LR
-    UI["React Web UI"] --> API["Fastify control plane"]
-    API --> Store["JSON metadata and Agent workspaces"]
-    API --> Runtime{"Runtime provider"}
-    Runtime -->|Local POC| Container["Disposable Docker / Colima / Podman container"]
-    Runtime -->|ECS profile| Codex["Codex CLI in application container"]
-    Container --> Ark["Volcengine Ark Responses API"]
-    Codex --> Ark
-```
-
-The first turn uses `codex exec`; later turns resume the stored Codex thread.
-Deleting an Agent archives its workspace under `workspaces/.deleted/`.
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for component and extension
-boundaries.
-
-## Validation
+### Validate
 
 ```bash
 npm run check
-terraform fmt -check -recursive deploy/volcengine
-docker compose config
 ```
 
-## Documentation
+## Demo Script
+
+Use these exact steps for the hackathon demo:
+
+1. Create an Agent and open the Playground.
+2. Run a successful task such as: `Create a tiny TypeScript CLI and run its test.`
+3. Open the AgentTrace inspector and show the run summary, durations, steps, and token usage.
+4. Run a failing task such as: `Run cat missing-file-for-demo.txt and explain the failure.`
+5. Open the failing run and identify the exact failed step, its exit status, and the diagnostic detail.
+6. Include a mock secret in a prompt or runtime output and show that AgentTrace stores `[REDACTED]` instead of the raw value.
+
+## Acceptance Notes
+
+- The middleware executes in the backend, not as a mock UI
+- Both success and failure cases are visible in the trace
+- Stored prompts and runtime details are redacted before persistence
+- Existing agents, messages, and runs survive schema migration
+- Deleting an Agent also deletes its trace records
+
+## Current Limitations
+
+- The product is still single-user and uses a shared access token, not real identity
+- Policy enforcement and kill-switch behavior are out of scope for this track
+- Container instrumentation is implemented, but Docker or Podman still needs to be installed locally for that runtime mode
+- Final Ark-backed rehearsal still requires real private credentials in `.env`
+
+## References
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)
-- [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)
 - [Security policy](SECURITY.md)
-- [Contributing](CONTRIBUTING.md)
 
 ## License
 
