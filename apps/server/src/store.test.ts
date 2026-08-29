@@ -15,6 +15,26 @@ afterEach(async () => {
 });
 
 describe("JsonStore", () => {
+  it("migrates a version 1 database to version 2 with trace storage", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
+    temporaryDirectories.push(root);
+    const filePath = path.join(root, "db.json");
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        agents: [{ id: "agent-1", name: "Agent", description: "", instructions: "", status: "ready", workspacePath: "/tmp", codexThreadId: null, lastError: null, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
+        messages: [],
+        runs: [],
+      }),
+    );
+    const store = new JsonStore(filePath);
+    await store.initialize();
+    expect(store.snapshot().version).toBe(2);
+    expect(store.snapshot().traceEvents).toEqual([]);
+  });
+
   it("does not publish a mutation in memory when persistence fails", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
     temporaryDirectories.push(root);

@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
+import {
+  buildCodexArgs,
+  parseCodexEventLine,
+  reconcileOpenTraceItems,
+  type ParsedEvents,
+} from "./codex-runner.js";
 
 describe("Codex runner protocol", () => {
   it("builds a new-session invocation", () => {
     const args = buildCodexArgs(
       {
         agentId: "agent",
+        runId: "run-1",
         workspacePath: "/tmp/workspace",
         prompt: "build a calculator",
         threadId: null,
@@ -28,6 +34,7 @@ describe("Codex runner protocol", () => {
     const args = buildCodexArgs(
       {
         agentId: "agent",
+        runId: "run-1",
         workspacePath: "/tmp/workspace",
         prompt: "add tests",
         threadId: "thread-123",
@@ -38,7 +45,8 @@ describe("Codex runner protocol", () => {
   });
 
   it("extracts the session, final message and usage", () => {
-    const parsed = {
+    const events: unknown[] = [];
+    const parsed: ParsedEvents = {
       messages: [] as string[],
       threadId: null as string | null,
       usage: null as {
@@ -47,6 +55,12 @@ describe("Codex runner protocol", () => {
         outputTokens?: number;
       } | null,
       errors: [] as string[],
+      observer: {
+        onEvent(event) {
+          events.push(event);
+        },
+      },
+      items: new Map(),
     };
     parseCodexEventLine(
       JSON.stringify({ type: "thread.started", thread_id: "thread-123" }),
@@ -69,5 +83,54 @@ describe("Codex runner protocol", () => {
     expect(parsed.threadId).toBe("thread-123");
     expect(parsed.messages).toEqual(["Done."]);
     expect(parsed.usage).toEqual({ inputTokens: 10, outputTokens: 4 });
+    expect(events).toHaveLength(3);
+  });
+
+  it("captures failed commands and reconciles unfinished items", () => {
+    const events: Array<Record<string, unknown>> = [];
+    const parsed: ParsedEvents = {
+      messages: [],
+      threadId: null,
+      usage: null,
+      errors: [],
+      observer: { onEvent: (event) => void events.push(event as Record<string, unknown>) },
+      items: new Map(),
+    };
+    parseCodexEventLine(
+      JSON.stringify({
+        type: "item.started",
+        item: { id: "cmd-1", type: "command_execution", command: "cat missing.txt" },
+      }),
+      parsed,
+    );
+    parseCodexEventLine(
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          id: "cmd-1",
+          type: "command_execution",
+          command: "cat missing.txt",
+          exit_code: 1,
+          output: "No such file",
+        },
+      }),
+      parsed,
+    );
+    parseCodexEventLine("not-json", parsed);
+    parseCodexEventLine(
+      JSON.stringify({
+        type: "item.started",
+        item: { id: "search-1", type: "web_search", query: "latest docs" },
+      }),
+      parsed,
+    );
+    reconcileOpenTraceItems(parsed, "cancelled", "server shutdown");
+    expect(events.some((event) => event.kind === "command" && event.status === "failed")).toBe(
+      true,
+    );
+    expect(events.some((event) => event.label === "Malformed event")).toBe(true);
+    expect(events.some((event) => event.kind === "web_search" && event.status === "cancelled")).toBe(
+      true,
+    );
   });
 });

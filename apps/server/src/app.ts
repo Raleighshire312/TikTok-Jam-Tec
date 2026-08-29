@@ -65,7 +65,7 @@ export async function createApp(
 
   app.get("/api/health", async () => ({
     ok: true,
-    service: "volc-agent-launchpad",
+    service: "agenttrace",
   }));
 
   app.get("/api/auth", async () => ({ required: config.authToken.length > 0 }));
@@ -126,6 +126,11 @@ export async function createApp(
   app.get("/api/runs/:id", async (request) => {
     const { id } = runIdParams.parse(request.params);
     return { run: service.getRun(id) };
+  });
+
+  app.get("/api/runs/:id/trace", async (request) => {
+    const { id } = runIdParams.parse(request.params);
+    return service.getTrace(id);
   });
 
   if (config.nodeEnv === "production") {

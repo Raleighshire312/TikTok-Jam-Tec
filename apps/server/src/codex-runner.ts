@@ -5,7 +5,11 @@ import type { AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
 import type {
   AgentRunner,
+  RunnerObserver,
   RunUsage,
+  TraceEventDetail,
+  TraceKind,
+  TraceStatus,
   RunnerRequest,
   RunnerResult,
 } from "./types.js";
@@ -17,6 +21,134 @@ export interface ParsedEvents {
   threadId: string | null;
   usage: RunUsage | null;
   errors: string[];
+  observer: RunnerObserver | null;
+  items: Map<
+    string,
+    {
+      kind: TraceKind;
+      label: string;
+      startedAt: string;
+      detail: TraceEventDetail | null;
+    }
+  >;
+}
+
+function eventTimestamp(): string {
+  return new Date().toISOString();
+}
+
+function usageFromObject(usage: Record<string, unknown>): RunUsage {
+  return {
+    ...(typeof usage.input_tokens === "number" ? { inputTokens: usage.input_tokens } : {}),
+    ...(typeof usage.cached_input_tokens === "number"
+      ? { cachedInputTokens: usage.cached_input_tokens }
+      : {}),
+    ...(typeof usage.output_tokens === "number" ? { outputTokens: usage.output_tokens } : {}),
+  };
+}
+
+function compactDetail(detail: Record<string, unknown>): TraceEventDetail | null {
+  const entries = Object.entries(detail).filter(([, value]) => value !== undefined);
+  return entries.length > 0 ? (Object.fromEntries(entries) as TraceEventDetail) : null;
+}
+
+function emit(parsed: ParsedEvents, event: Parameters<NonNullable<RunnerObserver["onEvent"]>>[0]) {
+  void parsed.observer?.onEvent(event);
+}
+
+function itemIdFor(item: Record<string, unknown>, event: Record<string, unknown>): string | null {
+  if (typeof item.id === "string") return item.id;
+  if (typeof event.item_id === "string") return event.item_id;
+  return null;
+}
+
+function mapItemKind(type: string): TraceKind {
+  if (type === "command_execution") return "command";
+  if (type === "file_change") return "file_change";
+  if (type.includes("mcp") || type.includes("tool")) return "tool_call";
+  if (type.includes("search")) return "web_search";
+  if (type === "agent_message") return "message";
+  if (type.includes("reason")) return "reasoning";
+  return "unknown";
+}
+
+function itemLabel(type: string, item: Record<string, unknown>): string {
+  if (type === "command_execution") return "Command";
+  if (type === "file_change") return "File change";
+  if (type === "agent_message") return "Assistant message";
+  if (type.includes("mcp") || type.includes("tool")) {
+    return typeof item.name === "string" ? item.name : "Tool call";
+  }
+  if (type.includes("search")) return "Web search";
+  return type.replaceAll("_", " ");
+}
+
+function itemDetail(type: string, item: Record<string, unknown>): TraceEventDetail | null {
+  if (type === "command_execution") {
+    return compactDetail({
+      command:
+        typeof item.command === "string"
+          ? item.command
+          : typeof item.cmd === "string"
+            ? item.cmd
+            : undefined,
+      exitCode: typeof item.exit_code === "number" ? item.exit_code : undefined,
+      text: typeof item.output === "string" ? item.output : undefined,
+    });
+  }
+  if (type === "file_change") {
+    return compactDetail({
+      filePath:
+        typeof item.path === "string"
+          ? item.path
+          : typeof item.file_path === "string"
+            ? item.file_path
+            : undefined,
+      changeType:
+        typeof item.change_type === "string"
+          ? item.change_type
+          : typeof item.kind === "string"
+            ? item.kind
+            : undefined,
+    });
+  }
+  if (type.includes("mcp") || type.includes("tool")) {
+    return compactDetail({
+      toolName:
+        typeof item.name === "string"
+          ? item.name
+          : typeof item.tool_name === "string"
+            ? item.tool_name
+            : undefined,
+      text: typeof item.arguments === "string" ? item.arguments : undefined,
+    });
+  }
+  if (type.includes("search")) {
+    return compactDetail({
+      query:
+        typeof item.query === "string"
+          ? item.query
+          : typeof item.search_query === "string"
+            ? item.search_query
+            : undefined,
+    });
+  }
+  if (type === "agent_message") {
+    return typeof item.text === "string" ? { text: item.text } : null;
+  }
+  return null;
+}
+
+function itemStatus(eventType: string, item: Record<string, unknown>): TraceStatus {
+  const raw = typeof item.status === "string" ? item.status : null;
+  if (eventType === "item.started") return "running";
+  if (raw === "failed") return "failed";
+  if (raw === "cancelled") return "cancelled";
+  if (raw === "completed" || eventType === "item.completed") {
+    if (typeof item.exit_code === "number" && item.exit_code !== 0) return "failed";
+    return "completed";
+  }
+  return "info";
 }
 
 export function buildCodexArgs(
@@ -46,11 +178,25 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
   try {
     event = JSON.parse(line) as Record<string, unknown>;
   } catch {
+    emit(parsed, {
+      source: "codex",
+      kind: "error",
+      status: "failed",
+      label: "Malformed event",
+      detail: { error: "Codex emitted malformed JSON" },
+    });
     return;
   }
 
   if (event.type === "thread.started" && typeof event.thread_id === "string") {
     parsed.threadId = event.thread_id;
+    emit(parsed, {
+      source: "codex",
+      kind: "lifecycle",
+      status: "running",
+      label: "Codex session started",
+      detail: { note: event.thread_id },
+    });
   }
 
   if (event.type === "item.completed" && event.item && typeof event.item === "object") {
@@ -62,17 +208,18 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
 
   if (event.type === "turn.completed" && event.usage && typeof event.usage === "object") {
     const usage = event.usage as Record<string, unknown>;
-    parsed.usage = {
-      ...(typeof usage.input_tokens === "number"
-        ? { inputTokens: usage.input_tokens }
-        : {}),
-      ...(typeof usage.cached_input_tokens === "number"
-        ? { cachedInputTokens: usage.cached_input_tokens }
-        : {}),
-      ...(typeof usage.output_tokens === "number"
-        ? { outputTokens: usage.output_tokens }
-        : {}),
-    };
+    parsed.usage = usageFromObject(usage);
+    emit(parsed, {
+      source: "codex",
+      kind: "usage",
+      status: "completed",
+      label: "Model usage",
+      usage: {
+        ...parsed.usage,
+        totalTokens:
+          (parsed.usage.inputTokens ?? 0) + (parsed.usage.outputTokens ?? 0),
+      },
+    });
   }
 
   if (event.type === "error") {
@@ -80,9 +227,78 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
       typeof event.message === "string"
         ? event.message
         : typeof event.error === "string"
-          ? event.error
-          : "Codex reported an unknown error";
+        ? event.error
+        : "Codex reported an unknown error";
     parsed.errors.push(message);
+    emit(parsed, {
+      source: "codex",
+      kind: "error",
+      status: "failed",
+      label: "Runtime error",
+      detail: { error: message },
+    });
+  }
+
+  if (
+    (event.type === "item.started" || event.type === "item.updated" || event.type === "item.completed") &&
+    event.item &&
+    typeof event.item === "object"
+  ) {
+    const item = event.item as Record<string, unknown>;
+    const type = typeof item.type === "string" ? item.type : "unknown";
+    const itemId = itemIdFor(item, event);
+    const kind = mapItemKind(type);
+    const label = itemLabel(type, item);
+    const detail = itemDetail(type, item);
+    const status = itemStatus(String(event.type), item);
+    const started = itemId ? parsed.items.get(itemId) : null;
+    const startedAt =
+      started?.startedAt ??
+      (typeof item.started_at === "string" ? item.started_at : eventTimestamp());
+    if (event.type === "item.started" && itemId) {
+      parsed.items.set(itemId, { kind, label, startedAt, detail });
+    }
+    if (event.type === "item.completed" && itemId) {
+      parsed.items.delete(itemId);
+    }
+    emit(parsed, {
+      source: "codex",
+      kind,
+      status,
+      label,
+      itemId,
+      startedAt: event.type === "item.started" ? startedAt : started?.startedAt ?? startedAt,
+      completedAt:
+        event.type === "item.completed" ? typeof item.completed_at === "string" ? item.completed_at : eventTimestamp() : null,
+      durationMs:
+        event.type === "item.completed"
+          ? Date.parse(typeof item.completed_at === "string" ? item.completed_at : eventTimestamp()) -
+            Date.parse(started?.startedAt ?? startedAt)
+          : null,
+      detail: started?.detail && detail ? { ...started.detail, ...detail } : (detail ?? started?.detail ?? null),
+    });
+  }
+}
+
+export function reconcileOpenTraceItems(
+  parsed: ParsedEvents,
+  status: "completed" | "failed" | "cancelled",
+  note: string,
+): void {
+  const completedAt = eventTimestamp();
+  for (const [itemId, item] of parsed.items.entries()) {
+    emit(parsed, {
+      source: "codex",
+      kind: item.kind,
+      status,
+      label: item.label,
+      itemId,
+      startedAt: item.startedAt,
+      completedAt,
+      durationMs: Date.parse(completedAt) - Date.parse(item.startedAt),
+      detail: { ...(item.detail ?? {}), note },
+    });
+    parsed.items.delete(itemId);
   }
 }
 
@@ -124,7 +340,7 @@ export class CodexRunner implements AgentRunner {
     return true;
   }
 
-  async run(request: RunnerRequest): Promise<RunnerResult> {
+  async run(request: RunnerRequest, observer?: RunnerObserver): Promise<RunnerResult> {
     if (this.active.has(request.agentId)) {
       throw new Error("Agent already has an active Codex process");
     }
@@ -154,6 +370,8 @@ export class CodexRunner implements AgentRunner {
       threadId: request.threadId,
       usage: null,
       errors: [],
+      observer: observer ?? null,
+      items: new Map(),
     };
     let stdout = "";
     let stderr = "";
@@ -199,18 +417,23 @@ export class CodexRunner implements AgentRunner {
         parseCodexEventLine(stdout.trim(), parsed);
       }
       if (active.cancelled) {
+        reconcileOpenTraceItems(parsed, "cancelled", "Run cancelled");
         throw new RunCancelledError();
       }
       if (active.timedOut) {
+        reconcileOpenTraceItems(parsed, "failed", "Run timed out");
         throw new Error("Codex timed out after " + this.config.codexTimeoutMs + " ms");
       }
       if (active.outputExceeded) {
+        reconcileOpenTraceItems(parsed, "failed", "Run exceeded output limit");
         throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
       }
       if (exitCode !== 0) {
+        reconcileOpenTraceItems(parsed, "failed", "Runtime process exited early");
         const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";
         throw new Error("Codex exited with code " + exitCode + ": " + detail);
       }
+      reconcileOpenTraceItems(parsed, "completed", "Step completed when runtime exited");
       const output = parsed.messages.at(-1)?.trim();
       if (!output) {
         throw new Error("Codex completed without an agent message");

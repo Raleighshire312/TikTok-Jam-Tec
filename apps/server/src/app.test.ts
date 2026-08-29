@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { HttpError } from "./errors.js";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import type { AgentService } from "./agent-service.js";
@@ -6,6 +7,7 @@ import type { AgentService } from "./agent-service.js";
 const service = {
   listAgents: () => [],
   systemInfo: async () => ({}),
+  getTrace: () => ({ run: { id: "run", agentId: "agent", status: "completed" }, traceEvents: [], summary: {} }),
 } as unknown as AgentService;
 
 describe("HTTP boundary", () => {
@@ -43,6 +45,24 @@ describe("HTTP boundary", () => {
       payload: JSON.stringify({ name: "x".repeat(1_100_000) }),
     });
     expect(oversized.statusCode).toBe(413);
+    await app.close();
+  });
+
+  it("returns 404 for an unknown trace run", async () => {
+    const app = await createApp(
+      loadConfig({ NODE_ENV: "test" }),
+      {
+        ...service,
+        getTrace: () => {
+          throw new HttpError(404, "Run not found");
+        },
+      } as AgentService,
+    );
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/runs/550e8400-e29b-41d4-a716-446655440000/trace",
+    });
+    expect(response.statusCode).toBe(404);
     await app.close();
   });
 });

@@ -1,11 +1,16 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
-import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
+import {
+  buildCodexArgs,
+  parseCodexEventLine,
+  reconcileOpenTraceItems,
+  type ParsedEvents,
+} from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
 import type {
   AgentRunner,
-  RunUsage,
+  RunnerObserver,
   RunnerRequest,
   RunnerResult,
 } from "./types.js";
@@ -20,13 +25,6 @@ interface ActiveContainer {
   outputExceeded: boolean;
   settled: Promise<void>;
   termination: Promise<void> | null;
-}
-
-interface ParsedEvents {
-  messages: string[];
-  threadId: string | null;
-  usage: RunUsage | null;
-  errors: string[];
 }
 
 export function containerName(agentId: string, instanceId = "default"): string {
@@ -137,7 +135,7 @@ export class ContainerCodexRunner implements AgentRunner {
     return active.termination;
   }
 
-  async run(request: RunnerRequest): Promise<RunnerResult> {
+  async run(request: RunnerRequest, observer?: RunnerObserver): Promise<RunnerResult> {
     if (this.active.has(request.agentId)) {
       throw new Error("Agent already has an active Runtime container");
     }
@@ -171,6 +169,8 @@ export class ContainerCodexRunner implements AgentRunner {
       threadId: request.threadId,
       usage: null,
       errors: [],
+      observer: observer ?? null,
+      items: new Map(),
     };
     let stdout = "";
     let stderr = "";
@@ -209,14 +209,20 @@ export class ContainerCodexRunner implements AgentRunner {
         child.once("close", (code) => resolve(code ?? 1));
       });
       if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed);
-      if (active.cancelled) throw new RunCancelledError();
+      if (active.cancelled) {
+        reconcileOpenTraceItems(parsed, "cancelled", "Run cancelled");
+        throw new RunCancelledError();
+      }
       if (active.timedOut) {
+        reconcileOpenTraceItems(parsed, "failed", "Run timed out");
         throw new Error("Runtime timed out after " + this.config.codexTimeoutMs + " ms");
       }
       if (active.outputExceeded) {
+        reconcileOpenTraceItems(parsed, "failed", "Run exceeded output limit");
         throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
       }
       if (exitCode !== 0) {
+        reconcileOpenTraceItems(parsed, "failed", "Runtime process exited early");
         const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";
         throw new Error(
           this.config.containerEngine +
@@ -226,6 +232,7 @@ export class ContainerCodexRunner implements AgentRunner {
             detail,
         );
       }
+      reconcileOpenTraceItems(parsed, "completed", "Step completed when runtime exited");
       const output = parsed.messages.at(-1)?.trim();
       if (!output) throw new Error("Codex completed without an agent message");
       return { output, threadId: parsed.threadId, usage: parsed.usage };

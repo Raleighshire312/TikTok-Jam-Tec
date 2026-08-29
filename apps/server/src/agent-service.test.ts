@@ -5,11 +5,27 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
 import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
-import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
+import type {
+  AgentRunner,
+  RunnerObserver,
+  RunnerRequest,
+  RunnerResult,
+} from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 
 class FakeRunner implements AgentRunner {
-  async run(request: RunnerRequest): Promise<RunnerResult> {
+  async run(request: RunnerRequest, observer?: RunnerObserver): Promise<RunnerResult> {
+    await observer?.onEvent({
+      source: "codex",
+      kind: "command",
+      status: "completed",
+      label: "Command",
+      itemId: "cmd-1",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      completedAt: "2026-01-01T00:00:01.000Z",
+      durationMs: 1000,
+      detail: { command: "echo ARK_API_KEY=test-key", text: "done" },
+    });
     return {
       output: "Completed: " + request.prompt,
       threadId: request.threadId ?? "fake-thread",
@@ -129,5 +145,35 @@ describe("Agent lifecycle", () => {
 
     finish({ output: "done", threadId: "thread", usage: null });
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+  });
+
+  it("stores redacted run, message, and trace data", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Coder" });
+    const { run } = await service.sendMessage(
+      agent.id,
+      "use ARK_API_KEY=test-key and bearer Bearer abcdefghijklmnop",
+    );
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    expect(service.getRun(run.id).prompt).toContain("[REDACTED]");
+    expect(service.getMessages(agent.id).every((message) => !message.content.includes("test-key"))).toBe(
+      true,
+    );
+    const trace = service.getTrace(run.id);
+    expect(trace.traceEvents.some((event) => event.redacted)).toBe(true);
+    expect(JSON.stringify(trace)).not.toContain("test-key");
+  });
+
+  it("returns ordered trace events and summary metrics", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Tracer" });
+    const { run } = await service.sendMessage(agent.id, "build a cli");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    const trace = service.getTrace(run.id);
+    expect(trace.traceEvents.length).toBeGreaterThanOrEqual(3);
+    expect(trace.traceEvents.map((event) => event.sequence)).toEqual(
+      [...trace.traceEvents.map((event) => event.sequence)].sort((a, b) => a - b),
+    );
+    expect(trace.summary.stepCount).toBeGreaterThan(0);
   });
 });
