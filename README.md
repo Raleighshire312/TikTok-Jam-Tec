@@ -16,7 +16,7 @@ This project intentionally does not implement Kill Switch policy enforcement in 
 - Runtime steps for commands, file changes, tool calls, searches, messages, usage, and errors
 - Secret redaction for stored prompts, messages, outputs, errors, and trace details
 - Responsive right-side inspector with run history, timeline filters, structured evidence, export, durations, failed steps, usage, and redaction counts
-- Automatic database migration from starter kit schema version 1 to version 2
+- Automatic database migration from starter kit schema version 1 to version 3
 
 ## Architecture
 
@@ -27,15 +27,15 @@ flowchart LR
     Browser["Browser Playground + AgentTrace Inspector"] --> API["Fastify API"]
     API --> Service["AgentService"]
     Service --> Redactor["Central redactor"]
-    Service --> Store["JSON store v2<br/>runs + traceEvents"]
+    Service --> Store["JSON store v3<br/>runs + traceEvents"]
     Service --> Runner{"AgentRunner"}
     Runner -->|Local process| Codex["Codex CLI"]
     Runner -->|Container| Runtime["Disposable runtime container"]
-    Codex --> Ark["Volcengine Ark"]
-    Runtime --> Ark
+    Codex --> Model["Selected model provider"]
+    Runtime --> Model
 ```
 
-Ark credentials stay outside persisted trace data. AgentTrace stores only redacted user-visible details and minimal structured runtime metadata.
+Provider credentials stay outside persisted trace data. AgentTrace stores only redacted user-visible details and minimal structured runtime metadata.
 
 ## Local Setup
 
@@ -44,7 +44,7 @@ Ark credentials stay outside persisted trace data. AgentTrace stores only redact
 - Node.js 22+
 - npm 10+
 - Either local Codex CLI or a container engine for the starter runtime path
-- Ark API key and model ID for real runs
+- Either Volcengine Ark credentials or an OpenAI API key for real runs
 
 ### Install and configure
 
@@ -60,8 +60,21 @@ APP_DATA_DIR=.data
 AGENT_WORKSPACE_ROOT=workspaces
 CODEX_HOME=codex-home
 RUNTIME_PROVIDER=local-process
+MODEL_PROVIDER=ark
 ARK_API_KEY=your-private-key
 ARK_MODEL=ep-your-model
+```
+
+Or use OpenAI:
+
+```dotenv
+APP_DATA_DIR=.data
+AGENT_WORKSPACE_ROOT=workspaces
+CODEX_HOME=codex-home
+RUNTIME_PROVIDER=local-process
+MODEL_PROVIDER=openai
+OPENAI_API_KEY=your-openai-api-key
+OPENAI_MODEL=gpt-5-codex
 ```
 
 ### Start the app
@@ -96,7 +109,7 @@ Use the repeatable script in [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) to show 
 - The product is still single-user and uses a shared access token, not real identity
 - Policy enforcement and kill-switch behavior are out of scope for this track
 - Container instrumentation is implemented, but Docker or Podman still needs to be installed locally for that runtime mode
-- Final Ark-backed rehearsal still requires real private credentials in `.env`
+- Final live rehearsal still requires real private credentials in `.env`
 
 ## References
 

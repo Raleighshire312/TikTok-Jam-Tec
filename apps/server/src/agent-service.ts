@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
-import { isArkConfigured } from "./config.js";
+import { isArkConfigured, isModelConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
 import { Redactor } from "./redaction.js";
 import { JsonStore } from "./store.js";
@@ -249,10 +249,12 @@ export class AgentService {
     prompt: string,
     retryOfRunId: string | null = null,
   ): Promise<{ run: AgentRun; message: Message }> {
-    if (!isArkConfigured(this.config)) {
+    if (!isModelConfigured(this.config)) {
       throw new HttpError(
         503,
-        "Ark is not configured. Set ARK_API_KEY and ARK_MODEL, then restart.",
+        this.config.modelProvider === "openai"
+          ? "OpenAI is not configured. Set OPENAI_API_KEY and OPENAI_MODEL, then restart."
+          : "Ark is not configured. Set ARK_API_KEY and ARK_MODEL, then restart.",
       );
     }
 
@@ -353,6 +355,10 @@ export class AgentService {
 
   async systemInfo(): Promise<Record<string, unknown>> {
     return {
+      modelProvider: this.config.modelProvider,
+      modelConfigured: this.config.modelConfigured,
+      modelBaseUrl: this.config.modelBaseUrl,
+      modelId: this.config.modelId || null,
       arkConfigured: isArkConfigured(this.config),
       arkBaseUrl: this.config.arkBaseUrl,
       arkModel: this.config.arkModel || null,
@@ -615,6 +621,9 @@ export class AgentService {
   private buildRuntimeMetadata(providerSessionId: string | null): TraceSpanMetadata {
     return {
       providerSessionId,
+      modelProvider: this.config.modelProvider,
+      modelBaseUrl: this.config.modelBaseUrl,
+      modelId: this.config.modelId || null,
       arkBaseUrl: this.config.arkBaseUrl,
       arkModelId: this.config.arkModel || null,
       runtimeProvider: this.config.runtimeProvider,
@@ -683,6 +692,9 @@ export class AgentService {
     };
 
     assign("providerSessionId", metadata.providerSessionId);
+    if (metadata.modelProvider !== undefined) next.modelProvider = metadata.modelProvider;
+    assign("modelBaseUrl", metadata.modelBaseUrl);
+    assign("modelId", metadata.modelId);
     assign("arkBaseUrl", metadata.arkBaseUrl);
     assign("arkModelId", metadata.arkModelId);
     if (metadata.runtimeProvider !== undefined) next.runtimeProvider = metadata.runtimeProvider;

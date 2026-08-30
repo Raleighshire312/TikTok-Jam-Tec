@@ -18,7 +18,7 @@ export class Redactor {
   private readonly literalSecrets: string[];
 
   constructor(config: AppConfig) {
-    this.literalSecrets = [config.arkApiKey, config.authToken]
+    this.literalSecrets = [config.arkApiKey, config.openAiApiKey, config.authToken]
       .map((value) => value.trim())
       .filter((value) => value.length >= 6 && !value.startsWith("replace-"));
   }

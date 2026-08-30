@@ -2,6 +2,7 @@ export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
 export type TraceSource = "service" | "codex";
+export type ModelProvider = "ark" | "openai";
 export type TraceKind =
   | "lifecycle"
   | "message"
@@ -58,6 +59,9 @@ export interface TraceEventUsage extends RunUsage {
 
 export interface TraceSpanMetadata {
   providerSessionId?: string | null;
+  modelProvider?: ModelProvider | null;
+  modelBaseUrl?: string | null;
+  modelId?: string | null;
   arkBaseUrl?: string | null;
   arkModelId?: string | null;
   runtimeProvider?: "local-process" | "container" | null;

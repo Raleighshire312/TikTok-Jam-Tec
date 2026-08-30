@@ -72,6 +72,29 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
   return service;
 }
 
+async function makeServiceWithConfig(
+  environment: NodeJS.ProcessEnv,
+  runner: AgentRunner = new FakeRunner(),
+): Promise<AgentService> {
+  const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
+  temporaryDirectories.push(root);
+  const config = loadConfig({
+    NODE_ENV: "test",
+    APP_DATA_DIR: path.join(root, "data"),
+    AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+    CODEX_HOME: path.join(root, "codex"),
+    ...environment,
+  });
+  const service = new AgentService(
+    config,
+    new JsonStore(path.join(root, "data", "db.json")),
+    new WorkspaceManager(path.join(root, "workspaces")),
+    runner,
+  );
+  await service.initialize();
+  return service;
+}
+
 describe("Agent lifecycle", () => {
   it("creates, updates, stops, starts and deletes an Agent", async () => {
     const service = await makeService();
@@ -205,5 +228,21 @@ describe("Agent lifecycle", () => {
       attempt: 2,
       sessionId: agent.sessionId,
     });
+  });
+
+  it("accepts an OpenAI-only configuration for real runs", async () => {
+    const service = await makeServiceWithConfig({
+      MODEL_PROVIDER: "openai",
+      OPENAI_API_KEY: "openai-test-key",
+      OPENAI_MODEL: "gpt-5-codex",
+    });
+    const agent = await service.createAgent({ name: "OpenAI Runner" });
+    const { run } = await service.sendMessage(agent.id, "write hello world");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    const trace = service.getTrace(run.id);
+    expect(trace.run.prompt).toContain("write hello world");
+    expect(trace.traceEvents.some((event) => event.metadata?.modelProvider === "openai")).toBe(
+      true,
+    );
   });
 });

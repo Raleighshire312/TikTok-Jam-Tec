@@ -1,6 +1,7 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type ActorType = "human" | "agent";
+export type ModelProvider = "ark" | "openai";
 
 export interface Agent {
   id: string;
@@ -70,6 +71,9 @@ export type TraceStatus =
 
 export interface TraceSpanMetadata {
   providerSessionId?: string | null;
+  modelProvider?: ModelProvider | null;
+  modelBaseUrl?: string | null;
+  modelId?: string | null;
   arkBaseUrl?: string | null;
   arkModelId?: string | null;
   runtimeProvider?: "local-process" | "container" | null;
@@ -163,6 +167,10 @@ export interface RunTrace {
 }
 
 export interface SystemInfo {
+  modelProvider: ModelProvider;
+  modelConfigured: boolean;
+  modelBaseUrl: string;
+  modelId: string | null;
   arkConfigured: boolean;
   arkBaseUrl: string;
   arkModel: string | null;

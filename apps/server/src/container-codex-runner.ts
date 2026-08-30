@@ -69,6 +69,8 @@ export function buildContainerRunArgs(
     "--env",
     "ARK_API_KEY",
     "--env",
+    "OPENAI_API_KEY",
+    "--env",
     "CODEX_HOME=/codex-home",
     "--env",
     "HOME=/tmp",
@@ -246,6 +248,7 @@ export class ContainerCodexRunner implements AgentRunner {
   private childEnvironment(): NodeJS.ProcessEnv {
     const environment: NodeJS.ProcessEnv = {
       ARK_API_KEY: this.config.arkApiKey,
+      OPENAI_API_KEY: this.config.openAiApiKey,
       NO_COLOR: "1",
     };
     for (const name of [

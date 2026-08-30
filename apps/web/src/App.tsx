@@ -141,6 +141,10 @@ function formatOptional(value: string | null | undefined): string {
   return value && value.trim().length > 0 ? value : "Unavailable";
 }
 
+function providerLabel(value: "ark" | "openai"): string {
+  return value === "openai" ? "OpenAI" : "Volcengine Ark";
+}
+
 function DiagnosisIcon({ severity }: { severity: TraceDiagnosis["severity"] }) {
   const size = 16;
   if (severity === "success") return <CheckCircle2 size={size} />;
@@ -199,6 +203,12 @@ function TraceEventDetails({
 
   const metadataRows: Array<[string, string | null | undefined, boolean?]> = [
     ["Provider session", event.metadata?.providerSessionId, true],
+    [
+      "Model provider",
+      event.metadata?.modelProvider ? providerLabel(event.metadata.modelProvider) : null,
+    ],
+    ["Model endpoint", event.metadata?.modelBaseUrl],
+    ["Model ID", event.metadata?.modelId],
     ["Ark endpoint", event.metadata?.arkBaseUrl],
     ["Ark model", event.metadata?.arkModelId],
     ["Runtime provider", event.metadata?.runtimeProvider],
@@ -282,6 +292,7 @@ function TraceInspector({
   onSelectRun,
   trace,
   loading,
+  systemProvider,
   onRetryRun,
   onClose,
 }: {
@@ -290,6 +301,7 @@ function TraceInspector({
   onSelectRun: (id: string) => void;
   trace: RunTrace | null;
   loading: boolean;
+  systemProvider: "ark" | "openai";
   onRetryRun: (run: AgentRun) => void;
   onClose?: () => void;
 }) {
@@ -313,6 +325,23 @@ function TraceInspector({
     filters.failedOnly;
   const availableKinds = [...new Set(allEvents.map((event) => event.kind))] as TraceKind[];
   const availableStatuses = [...new Set(allEvents.map((event) => event.status))] as TraceStatus[];
+  const activeModelProvider =
+    traceForRun?.traceEvents.find((event) => event.metadata?.modelProvider)?.metadata?.modelProvider ??
+    systemProvider;
+  const activeModelBaseUrl =
+    traceForRun?.traceEvents.find((event) => event.metadata?.modelBaseUrl)?.metadata?.modelBaseUrl ??
+    null;
+  const activeModelId =
+    traceForRun?.traceEvents.find((event) => event.metadata?.modelId)?.metadata?.modelId ?? null;
+  const activeProviderSession =
+    traceForRun?.traceEvents.find((event) => event.metadata?.providerSessionId)?.metadata
+      ?.providerSessionId ?? null;
+  const activeRuntimeProvider =
+    traceForRun?.traceEvents.find((event) => event.metadata?.runtimeProvider)?.metadata
+      ?.runtimeProvider ?? null;
+  const activeSandboxMode =
+    traceForRun?.traceEvents.find((event) => event.metadata?.sandboxMode)?.metadata?.sandboxMode ??
+    null;
 
   const focusEvidence = useCallback((eventId: string) => {
     window.requestAnimationFrame(() => {
@@ -501,11 +530,12 @@ function TraceInspector({
               </div>
               <InspectorFieldGrid
                 rows={[
-                  { label: "Ark endpoint", value: formatOptional(traceForRun.traceEvents.find((event) => event.metadata?.arkBaseUrl)?.metadata?.arkBaseUrl) },
-                  { label: "Ark model", value: formatOptional(traceForRun.traceEvents.find((event) => event.metadata?.arkModelId)?.metadata?.arkModelId) },
-                  { label: "Provider session", value: formatOptional(traceForRun.traceEvents.find((event) => event.metadata?.providerSessionId)?.metadata?.providerSessionId), code: Boolean(traceForRun.traceEvents.find((event) => event.metadata?.providerSessionId)?.metadata?.providerSessionId) },
-                  { label: "Runtime provider", value: formatOptional(traceForRun.traceEvents.find((event) => event.metadata?.runtimeProvider)?.metadata?.runtimeProvider) },
-                  { label: "Sandbox", value: formatOptional(traceForRun.traceEvents.find((event) => event.metadata?.sandboxMode)?.metadata?.sandboxMode) },
+                  { label: "Model provider", value: providerLabel(activeModelProvider) },
+                  { label: "Model endpoint", value: formatOptional(activeModelBaseUrl) },
+                  { label: "Model ID", value: formatOptional(activeModelId) },
+                  { label: "Provider session", value: formatOptional(activeProviderSession), code: Boolean(activeProviderSession) },
+                  { label: "Runtime provider", value: formatOptional(activeRuntimeProvider) },
+                  { label: "Sandbox", value: formatOptional(activeSandboxMode) },
                 ]}
               />
               {firstFailure ? (
@@ -1090,21 +1120,23 @@ export default function App() {
           <span className="eyebrow">Runtime</span>
           <strong>{system?.runtime ?? "Checking…"}</strong>
           <span>
-            {system?.arkModel ?? "Ark model not configured"}
+            {system ? providerLabel(system.modelProvider) + " · " + (system.modelId ?? "model not configured") : "Model not configured"}
             {system?.containerEngine ? " · " + system.containerEngine : ""}
           </span>
         </div>
       </aside>
 
       <main className="main">
-        {!system?.arkConfigured || !system?.codexAvailable ? (
+        {!system?.modelConfigured || !system?.codexAvailable ? (
           <div className="config-banner">
             <span>!</span>
             <div>
               <strong>Runtime configuration needed</strong>
               <p>
-                {!system?.arkConfigured
-                  ? "Set ARK_API_KEY and ARK_MODEL in .env before using the Playground."
+                {!system?.modelConfigured
+                  ? system?.modelProvider === "openai"
+                    ? "Set OPENAI_API_KEY and OPENAI_MODEL in .env before using the Playground."
+                    : "Set ARK_API_KEY and ARK_MODEL in .env before using the Playground."
                   : system.runtimeProvider === "container"
                     ? "The local container engine or Agent Runtime image is unavailable. Rerun npm run poc."
                     : "Codex CLI was not found. Use the Docker image or install @openai/codex."}
@@ -1327,6 +1359,7 @@ export default function App() {
                 onSelectRun={setSelectedRunId}
                 trace={trace}
                 loading={traceLoading}
+                systemProvider={system?.modelProvider ?? "ark"}
                 onRetryRun={beginRetry}
               />
             </div>
@@ -1359,6 +1392,7 @@ export default function App() {
               onSelectRun={setSelectedRunId}
               trace={trace}
               loading={traceLoading}
+              systemProvider={system?.modelProvider ?? "ark"}
               onRetryRun={beginRetry}
               onClose={() => setShowTraceDrawer(false)}
             />
