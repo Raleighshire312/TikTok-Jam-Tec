@@ -4,16 +4,24 @@ AgentTrace keeps the starter kit flow intact, then inserts trace capture and red
 
 ## One-page view
 
+See [AgentTrace one-page architecture diagram](AGENTTRACE_ARCHITECTURE.md) for the submission-ready version.
+
 ```mermaid
-flowchart LR
-    Browser["Browser UI<br/>Playground + Inspector"] --> API["Fastify API"]
-    API --> Service["AgentService"]
-    Service --> Redactor["Redactor"]
-    Service --> Store["launchpad.json v2<br/>agents, messages, runs, traceEvents"]
+flowchart TB
+    Browser["Browser UI<br/>Playground + AgentTrace Inspector"] --> API["Fastify API<br/>REST + optional bearer auth"]
+    API --> Service["AgentService<br/>run lifecycle owner"]
+    Service --> Recorder["Trace recorder queue"]
+    Recorder --> Redactor["Redactor"]
+    Redactor --> Store["JsonStore v3<br/>agents, messages, runs, traceEvents"]
+    Store --> Diagnosis["Trace diagnosis + export"]
+    Diagnosis --> API
     Service --> Workspace["Agent workspace"]
     Service --> Runner{"AgentRunner"}
     Runner -->|local-process| Codex["Codex CLI child process"]
     Runner -->|container| Runtime["Disposable runtime container"]
+    Codex --> Normalizer["Trace normalizer / span builder"]
+    Runtime --> Normalizer
+    Normalizer -->|runtime event observer| Recorder
     Codex --> Ark["Volcengine Ark Responses API"]
     Runtime --> Ark
 
@@ -27,10 +35,11 @@ flowchart LR
 1. The browser sends a prompt to the Fastify API.
 2. `AgentService` creates a queued run, stores the redacted prompt, and appends the first lifecycle trace event.
 3. The runner executes Codex and streams JSON events.
-4. Runtime events are normalized into a small `TraceEvent` model and passed back through the observer.
+4. Runtime events are normalized into a small `TraceEvent` span model and passed back through the observer.
 5. `AgentService` redacts safe detail fields again before persisting them into `traceEvents`.
-6. The browser polls the run and trace endpoints until the run reaches a terminal state.
-7. The inspector renders ordered steps, durations, failed commands, usage, and redaction counts.
+6. The trace API returns ordered spans, summary metrics, diagnosis, first-failure evidence, and retry metadata.
+7. The browser polls the run and trace endpoints until the run reaches a terminal state.
+8. The inspector renders ordered steps, durations, failed commands, usage, filters, export, and redaction counts.
 
 ## Main Components
 
@@ -38,8 +47,10 @@ flowchart LR
 
 - Owns run lifecycle state
 - Ensures one active run per Agent
+- Assigns trace, session, attempt, and agent version metadata
 - Records lifecycle trace events
 - Closes unfinished trace steps on restart, cancellation, timeout, or failure
+- Builds diagnosis and first-failure summaries for the trace endpoint
 
 ### Redactor
 
@@ -48,7 +59,7 @@ flowchart LR
 - Redacts values attached to key, token, secret, and password fields
 - Prevents raw prompt, output, and error strings from reaching disk
 
-### JsonStore v2
+### JsonStore v3
 
 - Migrates v1 starter data automatically
 - Persists `traceEvents` alongside existing agent, message, and run records
@@ -64,7 +75,8 @@ flowchart LR
 
 Each trace record stores:
 
-- run and agent identifiers
+- run, agent, trace, span, parent span, and session identifiers
+- agent version, actor type, retry attempt, and runtime metadata
 - deterministic sequence number
 - source, kind, and status
 - label

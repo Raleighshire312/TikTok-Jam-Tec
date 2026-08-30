@@ -101,6 +101,8 @@ Use the repeatable script in [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) to show 
 ## References
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [One-page architecture diagram](docs/AGENTTRACE_ARCHITECTURE.md)
+- [Architecture diagram SVG](docs/agenttrace-architecture.svg)
 - [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)
 - [Demo script](docs/DEMO_SCRIPT.md)
 - [Local POC](docs/LOCAL_POC.md)

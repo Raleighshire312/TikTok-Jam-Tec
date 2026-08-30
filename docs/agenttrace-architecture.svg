@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1200" viewBox="0 0 1400 1200" role="img" aria-labelledby="title desc">
+  <title id="title">AgentTrace Glass Box Middleware Architecture</title>
+  <desc id="desc">One-page architecture diagram showing the browser UI, Fastify API, AgentTrace middleware, runners, workspace, trace store, and Volcengine Ark trust boundary.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b7280"/>
+    </marker>
+    <style>
+      .title { font-family: Inter, Arial, sans-serif; font-size: 34px; font-weight: 800; fill: #111827; }
+      .subtitle { font-family: Inter, Arial, sans-serif; font-size: 18px; fill: #4b5563; }
+      .box-title { font-family: Inter, Arial, sans-serif; font-size: 24px; font-weight: 800; fill: #111827; }
+      .box-text { font-family: Inter, Arial, sans-serif; font-size: 17px; fill: #4b5563; }
+      .small-title { font-family: Inter, Arial, sans-serif; font-size: 20px; font-weight: 800; fill: #111827; }
+      .small-text { font-family: Inter, Arial, sans-serif; font-size: 15px; fill: #4b5563; }
+      .label { font-family: Inter, Arial, sans-serif; font-size: 14px; fill: #6b7280; font-weight: 700; }
+      .line { stroke: #6b7280; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .soft-line { stroke: #9ca3af; stroke-width: 2.5; stroke-dasharray: 8 8; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1400" height="1200" fill="#ffffff"/>
+  <text x="700" y="58" text-anchor="middle" class="title">AgentTrace Glass Box Middleware Architecture</text>
+  <text x="700" y="88" text-anchor="middle" class="subtitle">Track 1 deliverable: correlated run traces, safe audit storage, failure diagnosis, and export</text>
+
+  <rect x="460" y="125" width="480" height="105" rx="14" fill="#f6f3ee" stroke="#8b8175" stroke-width="2"/>
+  <text x="700" y="166" text-anchor="middle" class="box-title">Browser UI</text>
+  <text x="700" y="196" text-anchor="middle" class="box-text">Playground + AgentTrace Inspector</text>
+  <text x="700" y="219" text-anchor="middle" class="small-text">run history, filters, evidence, JSON export</text>
+
+  <line x1="700" y1="230" x2="700" y2="285" class="line"/>
+
+  <rect x="445" y="285" width="510" height="115" rx="14" fill="#e9f4ff" stroke="#2176ae" stroke-width="2"/>
+  <text x="700" y="326" text-anchor="middle" class="box-title" fill="#0b5f95">Fastify API</text>
+  <text x="700" y="356" text-anchor="middle" class="box-text">REST + optional bearer auth</text>
+  <text x="700" y="381" text-anchor="middle" class="small-text">/api/runs/:id/trace returns summary, spans, diagnosis</text>
+
+  <line x1="700" y1="400" x2="700" y2="450" class="line"/>
+
+  <rect x="120" y="450" width="1160" height="405" rx="28" fill="#f0edff" stroke="#7c68c7" stroke-width="2.2"/>
+  <text x="700" y="490" text-anchor="middle" class="box-title" fill="#4934a3">AgentTrace Glass Box Middleware</text>
+  <text x="700" y="518" text-anchor="middle" class="box-text">Backend-owned runtime observability and audit layer</text>
+
+  <rect x="445" y="548" width="510" height="98" rx="13" fill="#ffffff" stroke="#7c68c7" stroke-width="2"/>
+  <text x="700" y="584" text-anchor="middle" class="box-title">AgentService</text>
+  <text x="700" y="614" text-anchor="middle" class="box-text">run lifecycle, traceId, sessionId, attempt, agentVersion</text>
+
+  <rect x="170" y="695" width="245" height="95" rx="12" fill="#f3f4ff" stroke="#5b63c8" stroke-width="2"/>
+  <text x="292" y="732" text-anchor="middle" class="small-title">Trace Recorder</text>
+  <text x="292" y="758" text-anchor="middle" class="small-text">queued writes with</text>
+  <text x="292" y="780" text-anchor="middle" class="small-text">deterministic sequence</text>
+
+  <rect x="438" y="695" width="245" height="95" rx="12" fill="#fdf2ee" stroke="#b65d43" stroke-width="2"/>
+  <text x="560" y="732" text-anchor="middle" class="small-title">Redactor</text>
+  <text x="560" y="758" text-anchor="middle" class="small-text">secrets, bearer tokens,</text>
+  <text x="560" y="780" text-anchor="middle" class="small-text">key/token/password values</text>
+
+  <rect x="715" y="695" width="245" height="95" rx="12" fill="#ecfdf5" stroke="#15803d" stroke-width="2"/>
+  <text x="837" y="732" text-anchor="middle" class="small-title">JsonStore v3</text>
+  <text x="837" y="758" text-anchor="middle" class="small-text">runs + traceEvents</text>
+  <text x="837" y="780" text-anchor="middle" class="small-text">spans, metadata, usage</text>
+
+  <rect x="988" y="695" width="245" height="95" rx="12" fill="#fff7ed" stroke="#c26a18" stroke-width="2"/>
+  <text x="1110" y="732" text-anchor="middle" class="small-title">Diagnosis + Export</text>
+  <text x="1110" y="758" text-anchor="middle" class="small-text">first failure evidence</text>
+  <text x="1110" y="780" text-anchor="middle" class="small-text">suggested action, JSON</text>
+
+  <line x1="560" y1="646" x2="292" y2="695" class="line"/>
+  <line x1="415" y1="742" x2="438" y2="742" class="line"/>
+  <line x1="683" y1="742" x2="715" y2="742" class="line"/>
+  <line x1="960" y1="742" x2="988" y2="742" class="line"/>
+  <path d="M1110 695 C1110 650, 955 650, 860 650" class="soft-line"/>
+
+  <line x1="700" y1="646" x2="700" y2="882" class="line"/>
+
+  <rect x="505" y="882" width="390" height="90" rx="13" fill="#f7eefe" stroke="#8b5cf6" stroke-width="2"/>
+  <text x="700" y="920" text-anchor="middle" class="box-title">AgentRunner Interface</text>
+  <text x="700" y="950" text-anchor="middle" class="box-text">shared observer contract for runtime events</text>
+
+  <line x1="535" y1="972" x2="400" y2="1030" class="line"/>
+  <line x1="865" y1="972" x2="1000" y2="1030" class="line"/>
+
+  <rect x="170" y="1025" width="460" height="95" rx="13" fill="#fdeef4" stroke="#a13d63" stroke-width="2"/>
+  <text x="400" y="1063" text-anchor="middle" class="box-title">Local Runner</text>
+  <text x="400" y="1093" text-anchor="middle" class="box-text">Codex CLI child process</text>
+
+  <rect x="770" y="1025" width="460" height="95" rx="13" fill="#fdeef4" stroke="#a13d63" stroke-width="2"/>
+  <text x="1000" y="1063" text-anchor="middle" class="box-title">Container Runner</text>
+  <text x="1000" y="1093" text-anchor="middle" class="box-text">disposable runtime container</text>
+
+  <rect x="505" y="1025" width="390" height="95" rx="13" fill="#eef7ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="700" y="1063" text-anchor="middle" class="box-title">Trace Normalizer</text>
+  <text x="700" y="1091" text-anchor="middle" class="small-text">span builder for commands, files, tools,</text>
+  <text x="700" y="1113" text-anchor="middle" class="small-text">searches, usage, model calls, errors</text>
+
+  <path d="M400 1025 C400 955, 505 955, 292 790" class="soft-line"/>
+  <path d="M1000 1025 C1000 955, 715 920, 292 790" class="soft-line"/>
+  <text x="1085" y="944" class="label">runtime event observer</text>
+
+  <rect x="100" y="880" width="300" height="92" rx="13" fill="#f9fafb" stroke="#6b7280" stroke-width="2"/>
+  <text x="250" y="918" text-anchor="middle" class="small-title">Agent Workspace</text>
+  <text x="250" y="946" text-anchor="middle" class="small-text">files created and changed by runs</text>
+  <line x1="505" y1="927" x2="400" y2="927" class="line"/>
+
+  <rect x="890" y="870" width="410" height="76" rx="18" fill="#fff7ed" stroke="#b45309" stroke-width="2"/>
+  <text x="1095" y="900" text-anchor="middle" class="small-title">External Trust Boundary</text>
+  <text x="1095" y="926" text-anchor="middle" class="small-text">Volcengine Ark Responses API</text>
+
+  <line x1="400" y1="1025" x2="970" y2="946" class="line"/>
+  <line x1="1000" y1="1025" x2="1095" y2="946" class="line"/>
+
+  <rect x="118" y="165" width="275" height="95" rx="12" fill="#f9fafb" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="7 7"/>
+  <text x="255" y="203" text-anchor="middle" class="small-title">Submission Proof</text>
+  <text x="255" y="231" text-anchor="middle" class="small-text">successful run, failed step,</text>
+  <text x="255" y="253" text-anchor="middle" class="small-text">usage, redaction, export</text>
+
+  <rect x="1012" y="165" width="275" height="95" rx="12" fill="#f9fafb" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="7 7"/>
+  <text x="1150" y="203" text-anchor="middle" class="small-title">Out Of Scope</text>
+  <text x="1150" y="231" text-anchor="middle" class="small-text">policy blocking, login identity,</text>
+  <text x="1150" y="253" text-anchor="middle" class="small-text">kill switch controls</text>
+</svg>
